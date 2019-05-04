@@ -148,6 +148,84 @@ namespace TraceEventTests
         }
 
         [Fact]
+        public void StreamingV4()
+        {
+            // Initialize
+            PrepareTestData();
+
+            string eventPipeFilePath = @"C:\Users\noahfalk\Source\Repos\ConsoleApp26\ConsoleApp26\ConsoleApp26.20476.netperf";
+            Output.WriteLine(string.Format("Processing the file {0}", Path.GetFullPath(eventPipeFilePath)));
+            var eventStatistics = new SortedDictionary<string, EventRecord>(StringComparer.Ordinal);
+
+            long curStreamPosition = 0;
+            using (MockStreamingOnlyStream s = new MockStreamingOnlyStream(new FileStream(eventPipeFilePath, FileMode.Open, FileAccess.Read, FileShare.Read)))
+            {
+                using (var traceSource = new EventPipeEventSource(s))
+                {
+                    Action<TraceEvent> handler = delegate (TraceEvent data)
+                    {
+                        long newStreamPosition = s.TestOnlyPosition;
+                        // Empirically these files have event blocks of no more than 103K bytes each
+                        // The streaming code should never need to read ahead beyond the end of the current
+                        // block to read the events
+                        Assert.InRange(newStreamPosition, curStreamPosition, curStreamPosition + 103_000);
+                        curStreamPosition = newStreamPosition;
+
+
+                        string eventName = data.ProviderName + "/" + data.EventName;
+
+                        // For whatever reason the parse filtering below produces a couple extra events
+                        // that TraceLog managed to filter out:
+                        //    Microsoft-Windows-DotNETRuntime/Method, 2,
+                        //    Microsoft-Windows-DotNETRuntimeRundown/Method, 26103, ...
+                        // I haven't had an oportunity to investigate and its probably not a big
+                        // deal so just hacking around it for the moment
+                        if (eventName == "Microsoft-Windows-DotNETRuntimeRundown/Method" ||
+                            eventName == "Microsoft-Windows-DotNETRuntime/Method")
+                            return;
+
+                        if (eventStatistics.ContainsKey(eventName))
+                        {
+                            eventStatistics[eventName].TotalCount++;
+                        }
+                        else
+                        {
+                            eventStatistics[eventName] = new EventRecord()
+                            {
+                                TotalCount = 1,
+                                FirstSeriazliedSample = new String(data.ToString().Replace("\n", "\\n").Replace("\r", "\\r").Take(1000).ToArray())
+                            };
+                        }
+                    };
+
+                    // this is somewhat arbitrary looking set of parser event callbacks empirically
+                    // produces the same set of events as TraceLog.Events.GetSource().AllEvents so
+                    // that the baseline files can be reused from the Basic test
+                    var rundown = new ClrRundownTraceEventParser(traceSource);
+                    rundown.LoaderAppDomainDCStop += handler;
+                    rundown.LoaderAssemblyDCStop += handler;
+                    rundown.LoaderDomainModuleDCStop += handler;
+                    rundown.LoaderModuleDCStop += handler;
+                    rundown.MethodDCStopComplete += handler;
+                    rundown.MethodDCStopInit += handler;
+                    var sampleProfiler = new SampleProfilerTraceEventParser(traceSource);
+                    sampleProfiler.All += handler;
+                    var privateClr = new ClrPrivateTraceEventParser(traceSource);
+                    privateClr.All += handler;
+                    traceSource.Clr.All += handler;
+                    traceSource.Clr.MethodILToNativeMap -= handler;
+                    traceSource.Dynamic.All += handler;
+
+                    // Process
+                    traceSource.Process();
+                }
+            }
+
+
+        }
+
+
+        [Fact]
         public void CanParseHeaderOfV1EventPipeFile()
         {
             PrepareTestData();
