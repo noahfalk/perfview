@@ -63,6 +63,8 @@ namespace TraceEventTests
         private short ExampleShort = 0x1234;
         private int ExampleInt = 0x1234567;
         private long ExampleLong = 0xabcdef012345;
+        private string ExampleString = "hi there";
+        private bool ExampleBool = true;
         private SimpleRecord GetSimpleRecord()
         {
             return new SimpleRecord()
@@ -71,7 +73,9 @@ namespace TraceEventTests
                 Byte = ExampleByte,
                 Number16 = ExampleShort,
                 Number32 = ExampleInt,
-                Number64 = ExampleLong
+                Number64 = ExampleLong,
+                String = ExampleString,
+                Bool = ExampleBool
             };
         }
         private IStreamReader GetSimpleTypeStreamReader(SimpleRecord record = null)
@@ -81,15 +85,15 @@ namespace TraceEventTests
                 record = GetSimpleRecord();
             }
             MemoryStream ms = new MemoryStream();
-            BinaryWriter writer = new BinaryWriter(ms);
+            BinaryWriter writer = new BinaryWriter(ms, Encoding.UTF8);
 
             writer.Write(record.Guid.ToByteArray());
             writer.Write(record.Byte);
             writer.Write(record.Number16);
             writer.Write(record.Number32);
             writer.Write(record.Number64);
-            // string
-            // bool
+            writer.Write(record.String);
+            writer.Write(record.Bool);
             ms.Position = 0;
             return new PinnedStreamReader(ms);
         }
@@ -488,7 +492,8 @@ namespace TraceEventTests
         [Fact]
         public void StoreReadInstruction()
         {
-            IStreamReader reader = GetSimpleTypeStreamReader();
+            SimpleRecord expectedRecord = GetSimpleRecord();
+            IStreamReader reader = GetSimpleTypeStreamReader(expectedRecord);
             RecordType simpleType = GetSimpleRecordType<SimpleRecord>();
             RecordField guidField = simpleType.GetField("Guid");
             RecordField byteField = simpleType.GetField("Byte");
@@ -502,40 +507,31 @@ namespace TraceEventTests
 
             ParseInstruction instr = ParseInstruction.StoreRead(guidField, ParseRule.Guid);
             instr.Execute(reader, record);
-            Assert.Equal(new Guid(0x12345678, 0x9876, 0x5432, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x1, 0x2),
-                record.Guid);
+            Assert.Equal(expectedRecord.Guid, record.Guid);
 
             instr = ParseInstruction.StoreRead(byteField, ParseRule.FixedUInt8);
             instr.Execute(reader, record);
-            Assert.Equal(0xab, record.Byte);
+            Assert.Equal(expectedRecord.Byte, record.Byte);
 
             instr = ParseInstruction.StoreRead(number16Field, ParseRule.FixedInt16);
             instr.Execute(reader, record);
-            Assert.Equal(0x1234, record.Number16);
+            Assert.Equal(expectedRecord.Number16, record.Number16);
 
             instr = ParseInstruction.StoreRead(number32Field, ParseRule.FixedInt32);
             instr.Execute(reader, record);
-            Assert.Equal(0x1234567, record.Number32);
+            Assert.Equal(expectedRecord.Number32, record.Number32);
 
             instr = ParseInstruction.StoreRead(number64Field, ParseRule.FixedInt64);
             instr.Execute(reader, record);
-            Assert.Equal(0xabcedef012345, record.Number64);
+            Assert.Equal(expectedRecord.Number64, record.Number64);
 
-            /*
-            instr = new ParseInstruction();
-            instr.InstructionType = ParseInstructionType.FieldStoreRead;
-            instr.StoreFieldPath = new RecordField[] { stringField };
-            instr.ParseRule = ParseRule.Guid;
-            instr.Execute(null, record);
-            Assert.Equal(instr.InlineConstant, record.GetFieldValue<string>(stringField));
+            instr = ParseInstruction.StoreRead(stringField, ParseRule.UTF8String);
+            instr.Execute(reader, record);
+            Assert.Equal(expectedRecord.String, record.String);
 
-            instr = new ParseInstruction();
-            instr.InstructionType = ParseInstructionType.FieldStoreRead;
-            instr.StoreFieldPath = new RecordField[] { boolField };
-            instr.ParseRule = ParseRule.Guid;
-            instr.Execute(null, record);
-            Assert.Equal(instr.InlineConstant, record.GetFieldValue<bool>(boolField));
-            */
+            instr = ParseInstruction.StoreRead(boolField, ParseRule.Boolean);
+            instr.Execute(reader, record);
+            Assert.Equal(expectedRecord.Bool, record.Bool);
         }
 
 
@@ -544,7 +540,7 @@ namespace TraceEventTests
         public void ParseRecordWithParseRule()
         {
             RecordType simpleRecordType = GetSimpleRecordType<SimpleRecord>();
-            ParseRule rule = new ParseRule(1000, SerializationSize.Complex, simpleRecordType);
+            ParseRule rule = new ParseRule(1000, simpleRecordType);
             rule.Instructions = new ParseInstruction[]
             {
                 ParseInstruction.StoreRead(simpleRecordType.GetField("Guid"), ParseRule.Guid),
@@ -566,20 +562,51 @@ namespace TraceEventTests
         }
 
         [Fact]
-        void BinaryReaderTest()
+        void RecordTableLookup()
+        {
+            RecordType simpleRecordType = GetSimpleRecordType<SimpleRecord>();
+            RecordTable<SimpleRecord> table = new RecordTable<SimpleRecord>();
+            table.ItemType = simpleRecordType;
+            table.PrimaryKeyField = simpleRecordType.GetField("Number16");
+            table.OnParseComplete();
+
+            SimpleRecord record = new SimpleRecord();
+            record.Number16 = 12;
+            table.Add(record);
+            Assert.Equal(record, table.Get(12));
+        }
+
+        [Fact]
+        void ReadWriteWellKnownTypes()
         {
             MemoryStream ms = new MemoryStream();
             BinaryWriter writer = new BinaryWriter(ms);
-            string s = new string('a', 200);
-            writer.Write(s);
-            Assert.Equal(202, ms.Position);
-            byte a = ms.ToArray()[0];
-            byte b = ms.ToArray()[1];
-            byte c = ms.ToArray()[2];
-            byte d = ms.ToArray()[3];
+            RecordWriter.Write(writer, RecordType.Boolean);
+            RecordWriter.Write(writer, RecordType.Byte);
+            RecordWriter.Write(writer, RecordType.Type.GetField("Name"));
+            RecordWriter.Write(writer, RecordType.Type.GetField("Id"));
             ms.Position = 0;
-            BinaryReader reader = new BinaryReader(ms);
-            
+
+            IStreamReader reader = new PinnedStreamReader(ms);
+            RecordType booleanType = new RecordType();
+            ParseRule.Type.Parse(reader, booleanType);
+            Assert.Equal(RecordType.Boolean.Name, booleanType.Name);
+            Assert.Equal(RecordType.Boolean.Id, booleanType.Id);
+
+            RecordType byteType = new RecordType();
+            ParseRule.Type.Parse(reader, byteType);
+            Assert.Equal(RecordType.Byte.Name, byteType.Name);
+            Assert.Equal(RecordType.Byte.Id, byteType.Id);
+
+            RecordField nameField = new RecordField();
+            ParseRule.Field.Parse(reader, nameField);
+            Assert.Equal(RecordType.Type.GetField("Name").Name, nameField.Name);
+            Assert.Equal(RecordType.Type.GetField("Name").Id, nameField.Id);
+
+            RecordField idField = new RecordField();
+            ParseRule.Field.Parse(reader, idField);
+            Assert.Equal(RecordType.Type.GetField("Id").Name, idField.Name);
+            Assert.Equal(RecordType.Type.GetField("Id").Id, idField.Id);
         }
     }
 }

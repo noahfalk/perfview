@@ -11,10 +11,28 @@ using System.Threading.Tasks;
 
 namespace Microsoft.Diagnostics.Tracing.EventPipe
 {
-    internal enum RecordTypeId
+    // RecordType and RecordField have circular references in their static fields so we need to
+    // set that up explicitly
+    internal static class RecordTypeInitializer
     {
-        Type = 500,
-        Field = 501
+        public static void Init()
+        {
+            lock(typeof(RecordTypeInitializer))
+            {
+                if (RecordType.Type != null)
+                {
+                    return;
+                }
+                RecordType.Type = new RecordType(0, "Type", typeof(RecordType));
+                RecordType.Field = new RecordType(1, "Field", typeof(RecordField));
+                RecordType.Type.AddField(RecordField.TypeName = new RecordField(0, "Name", RecordType.Type, RecordType.String));
+                RecordType.Type.AddField(RecordField.TypeId = new RecordField(1, "Id", RecordType.Type, RecordType.Int32));
+                RecordType.Field.AddField(RecordField.FieldName = new RecordField(2, "Name", RecordType.Field, RecordType.String));
+                RecordType.Field.AddField(RecordField.FieldId = new RecordField(3, "Id", RecordType.Field, RecordType.Int32));
+                RecordType.Field.AddField(RecordField.FieldContainingType = new RecordField(4, "ContainingType", RecordType.Field, RecordType.Type));
+                RecordType.Field.AddField(RecordField.FieldFieldType = new RecordField(5, "FieldType", RecordType.Field, RecordType.Type));
+            }
+        }
     }
 
     internal class RecordType : Record
@@ -29,8 +47,13 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public static RecordType Guid = new RecordType(19, "Guid", typeof(Guid));
 
         // Well-known record types
-        public static RecordType Type = new RecordType((int)RecordTypeId.Type, "Type", typeof(RecordType));
-        public static RecordType Field = new RecordType((int)RecordTypeId.Field, "Field", typeof(RecordField));
+        public static RecordType Type;  // initialized by RecordTypeInitializer
+        public static RecordType Field; // initialized by RecordTypeInitializer
+
+        static RecordType()
+        {
+            RecordTypeInitializer.Init();
+        }
 
         public int Id;
         public string Name;
@@ -58,12 +81,21 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         Action<Record> _initRecord;
         ParameterExpression _recordParameterExpression;
 
-        public RecordType(int id, string name, Type accessType)
+        public RecordType()
+        {
+            _recordParameterExpression = Expression.Parameter(typeof(Record), "record");
+        }
+
+        public RecordType(int id, string name, Type accessType, params RecordField[] fields) : this()
         {
             Id = id;
             Name = name;
             ReflectionType = accessType;
-            _recordParameterExpression = Expression.Parameter(typeof(Record), "record");
+            if(fields != null)
+            {
+                foreach (RecordField f in fields)
+                    AddField(f);
+            }
         }
 
         public void AddField(RecordField field)
@@ -138,6 +170,11 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return body;
         }
 
+        public Expression CreateFieldExpression(Expression record, RecordField[] fieldPath)
+        {
+            return GetBackingFieldExpression(record, this, 0, fieldPath);
+        }
+
         FieldPathGetterSetter GetOrCreateFieldGetterSetter(RecordField[] fieldPath)
         {
             foreach (FieldPathGetterSetter getterSetter in _fieldDelegates)
@@ -165,11 +202,6 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 field = Expression.Convert(field, fieldType);
             }
             return Expression.Lambda(delegateType, field, recordParameter).Compile();
-        }
-
-        Expression CreateFieldExpression(Expression record, RecordField[] fieldPath)
-        {
-            return GetBackingFieldExpression(record, this, 0, fieldPath);
         }
 
         Expression GetBackingFieldExpression(Expression recordObj, RecordType recordType, int level, RecordField[] fieldPath)
@@ -228,8 +260,21 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         }
     }
 
-    internal class RecordField
+    internal class RecordField : Record
     {
+        // well-known fields
+        public static RecordField TypeName;            // initialized by RecordTypeInitializer
+        public static RecordField TypeId;              // initialized by RecordTypeInitializer
+        public static RecordField FieldName;           // initialized by RecordTypeInitializer
+        public static RecordField FieldId;             // initialized by RecordTypeInitializer
+        public static RecordField FieldContainingType; // initialized by RecordTypeInitializer
+        public static RecordField FieldFieldType;      // initialized by RecordTypeInitializer
+
+        static RecordField()
+        {
+            RecordTypeInitializer.Init();
+        }
+
         public int Id;
         public string Name;
         public RecordType ContainingType;
@@ -237,6 +282,8 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
         public int DynamicFieldTypeIndex;
         public int DynamicFieldIndex;
+
+        public RecordField() { }
 
         public RecordField(int id, string name, RecordType containingType, RecordType fieldType)
         {
@@ -252,6 +299,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         StoreConstant,
         StoreRead,
         StoreField,
+        StoreFieldLookup,
         AddConstant,
         AddRead,
         AddField
@@ -273,19 +321,35 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 ParseRule = parseRule
             };
         }
+        public static ParseInstruction StoreField(RecordField storeField, RecordField[] loadFieldPath)
+        {
+            return new ParseInstruction(ParseInstructionType.StoreField, storeField)
+            {
+                LoadFieldPath = loadFieldPath
+            };
+        }
+        public static ParseInstruction StoreFieldLookup(RecordField storeField, RecordField[] loadFieldPath, RecordTable lookupTable)
+        {
+            return new ParseInstruction(ParseInstructionType.StoreFieldLookup, storeField)
+            {
+                LoadFieldPath = loadFieldPath,
+                LookupTable = lookupTable
+            };
+        }
 
         public ParseInstructionType InstructionType { get; private set; }
         public object Constant { get; private set; }
-        public RecordField StoreField { get; private set; }
+        public RecordField DestinationField { get; private set; }
         public RecordField[] LoadFieldPath { get; private set; }
         public ParseRule ParseRule { get; private set; }
+        public RecordTable LookupTable { get; private set; }
 
         private Action<IStreamReader, Record> _cachedExecuteAction;
 
-        private ParseInstruction(ParseInstructionType instructionType, RecordField storeField)
+        private ParseInstruction(ParseInstructionType instructionType, RecordField destinationField)
         {
             InstructionType = instructionType;
-            StoreField = storeField;
+            DestinationField = destinationField;
             //TODO: validate instruction?
         }
 
@@ -302,11 +366,16 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 {
                     case (ParseInstructionType.StoreConstant):
                         Expression constantExpression = Expression.Constant(Constant);
-                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(StoreField.ContainingType, constantExpression, StoreField);
+                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, constantExpression, DestinationField);
                         break;
                     case (ParseInstructionType.StoreRead):
-                        Expression readExpression = RecordParseCodeGen.CreateParseExpression(ParseRule);
-                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(StoreField.ContainingType, readExpression, StoreField);
+                        Expression readExpression = RecordParseCodeGen.GetParseExpression(ParseRule);
+                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, readExpression, DestinationField);
+                        break;
+                    case ParseInstructionType.StoreField:
+                        Expression readFieldExpression = RecordParseCodeGen.GetFieldReadExpression(RecordParseCodeGen.RecordParameter,
+                            LoadFieldPath, DestinationField.FieldType.ReflectionType);
+                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, readFieldExpression, DestinationField);
                         break;
                 }
             }
@@ -329,7 +398,26 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 Expression.Lambda(delegateType, body, StreamReaderParameter, RecordParameter).Compile();
         }
 
-        public static Expression CreateParseExpression(ParseRule parseRule, Expression streamReader = null)
+        public static Func<T,U> GetRecordFieldDelegate<T,U>(RecordType recordType, RecordField field)
+        {
+            Debug.Assert(typeof(T) == recordType.ReflectionType);
+            ParameterExpression record = Expression.Parameter(typeof(T), "record");
+            Expression body = GetFieldReadExpression(record, new RecordField[] { field }, typeof(U));
+            return Expression.Lambda<Func<T,U>>(body, record).Compile();
+        }
+
+        public static Expression GetFieldReadExpression(Expression record, RecordField[] fieldPath, Type targetType)
+        {
+            RecordType recordType = fieldPath[0].ContainingType;
+            Expression fieldRead = recordType.CreateFieldExpression(record, fieldPath);
+            if (fieldRead.Type != targetType)
+            {
+                fieldRead = Expression.Convert(fieldRead, targetType);
+            }
+            return fieldRead;
+        }
+
+        public static Expression GetParseExpression(ParseRule parseRule, Expression streamReader = null)
         {
             if(streamReader == null)
             {
@@ -337,9 +425,12 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             }
             switch (parseRule.Id)
             {
-                case (int)PrimitiveParseRuleId.FixedUInt8:
+                case (int)PrimitiveParseRuleId.Boolean:
                     MethodInfo readByte = typeof(IStreamReader).GetMethod("ReadByte", BindingFlags.Public | BindingFlags.Instance);
-                    return Expression.Call(streamReader, readByte);
+                    return Expression.NotEqual(Expression.Call(streamReader, readByte), Expression.Constant((byte)0));
+                case (int)PrimitiveParseRuleId.FixedUInt8:
+                    MethodInfo readByte2 = typeof(IStreamReader).GetMethod("ReadByte", BindingFlags.Public | BindingFlags.Instance);
+                    return Expression.Call(streamReader, readByte2);
                 case (int)PrimitiveParseRuleId.FixedInt16:
                     MethodInfo readInt16 = typeof(IStreamReader).GetMethod("ReadInt16", BindingFlags.Public | BindingFlags.Instance);
                     return Expression.Call(streamReader, readInt16);
@@ -362,13 +453,11 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
         public static ParameterExpression StreamReaderParameter = Expression.Parameter(typeof(IStreamReader), "streamReader");
         public static ParameterExpression RecordParameter = Expression.Parameter(typeof(Record), "record");
-
-        
     }
 
     internal class ParseFunctions
     {
-        string ReadUTF8String(IStreamReader reader)
+        public static string ReadUTF8String(IStreamReader reader)
         {
             ushort numBytes = ReadVarUInt16(reader);
             byte[] bytes = new byte[numBytes];
@@ -376,7 +465,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return Encoding.UTF8.GetString(bytes, 0, numBytes);
         }
 
-        ushort ReadVarUInt16(IStreamReader reader)
+        public static ushort ReadVarUInt16(IStreamReader reader)
         {
             if(!TryReadVarUInt(reader, out ulong val) || val > ushort.MaxValue)
             {
@@ -385,7 +474,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return (ushort)val;
         }
 
-        uint ReadVarUInt32(IStreamReader reader)
+        public static uint ReadVarUInt32(IStreamReader reader)
         {
             if (!TryReadVarUInt(reader, out ulong val) || val > uint.MaxValue)
             {
@@ -394,7 +483,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return (uint)val;
         }
 
-        ulong ReadVarUInt64(IStreamReader reader)
+        public static ulong ReadVarUInt64(IStreamReader reader)
         {
             if (!TryReadVarUInt(reader, out ulong val))
             {
@@ -403,7 +492,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return val;
         }
 
-        bool TryReadVarUInt(IStreamReader reader, out ulong val)
+        public static bool TryReadVarUInt(IStreamReader reader, out ulong val)
         {
             val = 0;
             int shift = 0;
@@ -436,8 +525,8 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public static void Write(BinaryWriter writer, RecordField recordField)
         {
             writer.Write((int)recordField.Id);
-            writer.Write((int)recordField.ContainingType.Id);
-            writer.Write((int)recordField.FieldType.Id);
+            //writer.Write((int)recordField.ContainingType.Id);
+            //writer.Write((int)recordField.FieldType.Id);
             WriteUTF8String(writer, recordField.Name);
         }
 
@@ -463,74 +552,60 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         }
     }
 
-    internal enum SerializationSize
-    {
-        Fixed8,
-        Fixed16,
-        Fixed32,
-        Fixed64,
-        Fixed128,
-        //CompressedInt,
-        //CountedArrayUInt32Fixed8,  // UInt32 is the leading count, followed by that many bytes
-        //CountedArrayUInt32Fixed16, // UInt32 is the leading count, followed by that many words
-        Complex                    // Described by a series of parse instructions in the corresponding layout 
-    }
-
     internal enum PrimitiveParseRuleId
     {
-        FixedUInt8 = 0,
-        FixedInt16 = 1,
-        FixedInt32 = 2,
-        FixedInt64 = 3,
-        VarUInt16 =  4,     // UInt16 is divided into 7bit chunks from least significant chunk to most significant chunk
+        Boolean = 0,
+        FixedUInt8 = 1,
+        FixedInt16 = 2,
+        FixedInt32 = 3,
+        FixedInt64 = 4,
+        VarUInt16 =  5,     // UInt16 is divided into 7bit chunks from least significant chunk to most significant chunk
                             // Each 7 bit chunk is written as a byte where a 1 bit is prepended if there are more chunks
                             // to come and 0 if it is the last chunk. This encoding uses at most 3 bytes. Example:
                             // Decimal: 53,241
                             // Binary: 1100 1111 1111 1001
                             // 7 bit chunks ordered least->most significant: 1111001 0011111 0000011
                             // Byte encoding: 11111001 10011111 00000011
-        VarUInt32 =  5,     
-        VarUInt64 =  6,
-        UTF8String = 7,     // Default string parser is a VarUInt32 count, followed by count bytes (not chars!) of UTF8 data
+        VarUInt32 =  6,     
+        VarUInt64 =  7,
+        UTF8String = 8,     // Default string parser is a VarUInt32 count, followed by count bytes (not chars!) of UTF8 data
                             // Example: 0x3,        0x41, 0x42, 0x43
                             //          Len=3       'A'   'B'   'C'  = "ABC"
-        Guid = 8,
-        // add new rules here and increase Count
+        Guid       = 9,
 
-        Count = 9 
+        // add new rules here and increase Count
+        Count      = 10 
     }
 
 
 
     internal class ParseRule
     {
-        //TODO: replace SerializationSize with instructions that advance the offset 
-        public static ParseRule Guid = new ParseRule((int)PrimitiveParseRuleId.Guid, SerializationSize.Fixed128, RecordType.Guid);
-        public static ParseRule FixedUInt8 = new ParseRule((int)PrimitiveParseRuleId.FixedUInt8, SerializationSize.Fixed8, RecordType.Byte);
-        public static ParseRule FixedInt16 = new ParseRule((int)PrimitiveParseRuleId.FixedInt16, SerializationSize.Fixed16, RecordType.Int16);
-        public static ParseRule FixedInt32 = new ParseRule((int)PrimitiveParseRuleId.FixedInt32, SerializationSize.Fixed32, RecordType.Int32);
-        public static ParseRule FixedInt64 = new ParseRule((int)PrimitiveParseRuleId.FixedInt64, SerializationSize.Fixed64, RecordType.Int64);
-        public static ParseRule UTF8String = new ParseRule((int)PrimitiveParseRuleId.UTF8String, SerializationSize.Complex, RecordType.String);
+        public static ParseRule Boolean = new ParseRule((int)PrimitiveParseRuleId.Boolean, RecordType.Boolean);
+        public static ParseRule FixedUInt8 = new ParseRule((int)PrimitiveParseRuleId.FixedUInt8, RecordType.Byte);
+        public static ParseRule FixedInt16 = new ParseRule((int)PrimitiveParseRuleId.FixedInt16, RecordType.Int16);
+        public static ParseRule FixedInt32 = new ParseRule((int)PrimitiveParseRuleId.FixedInt32, RecordType.Int32);
+        public static ParseRule FixedInt64 = new ParseRule((int)PrimitiveParseRuleId.FixedInt64, RecordType.Int64);
+        public static ParseRule UTF8String = new ParseRule((int)PrimitiveParseRuleId.UTF8String, RecordType.String);
+        public static ParseRule Guid = new ParseRule((int)PrimitiveParseRuleId.Guid, RecordType.Guid);
 
-        public static ParseRule Type = new ParseRule((int)RecordTypeId.Type, SerializationSize.Complex, RecordType.Type,
+        public static ParseRule Type = new ParseRule(500, RecordType.Type,
             ParseInstruction.StoreRead(RecordType.Type.GetField("Id"), ParseRule.FixedInt32),
             ParseInstruction.StoreRead(RecordType.Type.GetField("Name"), ParseRule.UTF8String));
-        public static ParseRule Field = new ParseRule((int)RecordTypeId.Field, SerializationSize.Complex, RecordType.Field,
-            ParseInstruction.StoreRead(RecordType.Type.GetField("Id"), ParseRule.FixedInt32),
-            ParseInstruction.StoreRead(RecordType.Type.GetField("ContainingTypeId"), ParseRule.FixedInt32),
-            ParseInstruction.StoreRead(RecordType.Type.GetField("FieldTypeId"), ParseRule.FixedInt32),
-            ParseInstruction.StoreRead(RecordType.Type.GetField("Name"), ParseRule.UTF8String));
+        public static ParseRule Field = new ParseRule(501, RecordType.Field,
+            ParseInstruction.StoreRead(RecordType.Field.GetField("Id"), ParseRule.FixedInt32),
+            //ParseInstruction.StoreRead(RecordType.Type.GetField("ContainingTypeId"), ParseRule.FixedInt32),
+            //ParseInstruction.StoreRead(RecordType.Type.GetField("FieldTypeId"), ParseRule.FixedInt32),
+            ParseInstruction.StoreRead(RecordType.Field.GetField("Name"), ParseRule.UTF8String));
 
 
         public int Id;
-        public SerializationSize Size;
         public RecordType ParsedType;
         public ParseInstruction[] Instructions;
 
-        public ParseRule(int id, SerializationSize size, RecordType parsedType, params ParseInstruction[] instructions)
+        public ParseRule(int id, RecordType parsedType, params ParseInstruction[] instructions)
         {
             Id = id;
-            Size = size;
             ParsedType = parsedType;
             Instructions = instructions;
             //TODO: validate instructions
@@ -571,6 +646,64 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public T GetFieldValue<T>(params RecordField[] fieldPath)
         {
             return ((Func<Record,T>)_recordType.GetFieldReadDelegate(fieldPath))(this);
+        }
+    }
+
+    internal class RecordStream : Record
+    {
+        public string Name;
+        public int Id;
+        public RecordType ItemType;
+    }
+
+    internal class RecordStream<T> : RecordStream
+    {
+        public virtual void Add(T item) { }
+    }
+
+    internal class RecordTable : RecordStream
+    {
+        public RecordField PrimaryKeyField;
+    }
+
+    internal class RecordTable<T> : RecordTable
+    {
+        Func<T, int> _getKeyDelegate;
+        Dictionary<int, T> _lookupTable = new Dictionary<int, T>();
+
+        public void OnParseComplete()
+        {
+            _getKeyDelegate = RecordParseCodeGen.GetRecordFieldDelegate<T, int>(ItemType, PrimaryKeyField);
+        }
+
+        public void Add(T item)
+        {
+            int key = _getKeyDelegate(item);
+            _lookupTable.Add(key, item);
+        }
+
+        public T Get(int key)
+        {
+            return _lookupTable[key];
+        }
+    }
+
+    internal class ParseContext
+    {
+        static int MaxCountTables = 1000;
+        List<object> _lookupTables = new List<object>();
+
+        public void RegisterLookupTable<T>(int tableId, IDictionary<int,T> table)
+        {
+            if(tableId >= MaxCountTables)
+            {
+                throw new ArgumentOutOfRangeException("tableId");
+            }
+            while(_lookupTables.Count <= tableId)
+            {
+                _lookupTables.Add(null);
+            }
+            _lookupTables[tableId] = table;
         }
     }
 
