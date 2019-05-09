@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -246,8 +247,6 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         }
     }
 
-
-
     internal enum ParseInstructionType
     {
         StoreConstant,
@@ -354,7 +353,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                     MethodInfo readGuid = typeof(IStreamWriterExentions).GetMethod("ReadGuid", BindingFlags.Public | BindingFlags.Static);
                     return Expression.Call(readGuid, streamReader);
                 case (int)PrimitiveParseRuleId.UTF8String:
-                    MethodInfo readUtf8 = typeof(WellKnownParseFunctions).GetMethod("ReadUTF8String", BindingFlags.Public | BindingFlags.Static);
+                    MethodInfo readUtf8 = typeof(ParseFunctions).GetMethod("ReadUTF8String", BindingFlags.Public | BindingFlags.Static);
                     return Expression.Call(readUtf8, streamReader);
                 default:
                     throw new ArgumentException("Parse rule id " + parseRule.Id + " not recognized");
@@ -367,14 +366,100 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         
     }
 
-    internal class WellKnownParseFunctions
+    internal class ParseFunctions
     {
         string ReadUTF8String(IStreamReader reader)
         {
-            ushort numBytes = (ushort)reader.ReadInt16();
+            ushort numBytes = ReadVarUInt16(reader);
             byte[] bytes = new byte[numBytes];
             reader.Read(bytes, 0, numBytes);
-            return Encoding.UTF8.GetString(bytes, 0, numBytes - 1); // numBytes includes a null terminator
+            return Encoding.UTF8.GetString(bytes, 0, numBytes);
+        }
+
+        ushort ReadVarUInt16(IStreamReader reader)
+        {
+            if(!TryReadVarUInt(reader, out ulong val) || val > ushort.MaxValue)
+            {
+                throw new SerializationException("Invalid VarUInt16");
+            }
+            return (ushort)val;
+        }
+
+        uint ReadVarUInt32(IStreamReader reader)
+        {
+            if (!TryReadVarUInt(reader, out ulong val) || val > uint.MaxValue)
+            {
+                throw new SerializationException("Invalid VarUInt32");
+            }
+            return (uint)val;
+        }
+
+        ulong ReadVarUInt64(IStreamReader reader)
+        {
+            if (!TryReadVarUInt(reader, out ulong val))
+            {
+                throw new SerializationException("Invalid VarUInt64");
+            }
+            return val;
+        }
+
+        bool TryReadVarUInt(IStreamReader reader, out ulong val)
+        {
+            val = 0;
+            int shift = 0;
+            byte b;
+            do
+            {
+                if(shift == 10*7)
+                {
+                    return false;
+                }
+                b = reader.ReadByte();
+                val |= (uint)(b & 0x7f) << shift;
+                shift += 7;
+            } while ((b & 0x80) != 0);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Writes well known Record types in a format that can be deserialized using the well known ParseRules
+    /// </summary>
+    internal static class RecordWriter
+    {
+        public static void Write(BinaryWriter writer, RecordType recordType)
+        {
+            writer.Write((int)recordType.Id);
+            WriteUTF8String(writer, recordType.Name);
+        }
+
+        public static void Write(BinaryWriter writer, RecordField recordField)
+        {
+            writer.Write((int)recordField.Id);
+            writer.Write((int)recordField.ContainingType.Id);
+            writer.Write((int)recordField.FieldType.Id);
+            WriteUTF8String(writer, recordField.Name);
+        }
+
+        public static void WriteUTF8String(BinaryWriter writer, string val)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(val);
+            if(bytes.Length > ushort.MaxValue)
+            {
+                throw new SerializationException("string is too long for this encoding");
+            }
+            WriteVarUInt(writer, (ulong)bytes.Length);
+            writer.Write(bytes);
+        }
+
+        public static void WriteVarUInt(BinaryWriter writer, ulong val)
+        {
+            while(val >= 0x80)
+            {
+                writer.Write((byte)(val & 0x7F) | 0x80);
+                val >>= 7;
+            }
+            writer.Write((byte)val);
         }
     }
 
@@ -397,13 +482,22 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         FixedInt16 = 1,
         FixedInt32 = 2,
         FixedInt64 = 3,
-        UTF8String = 4,     // Default string parser is uint16 count, followed by count bytes (not chars!) of UTF8 data
-                            // Example: 0x3, 0x0,   0x41, 0x42, 0x43
-                            //           Len=3       'A'   'B'   'C'  = "ABC"
-        Guid = 5,
+        VarUInt16 =  4,     // UInt16 is divided into 7bit chunks from least significant chunk to most significant chunk
+                            // Each 7 bit chunk is written as a byte where a 1 bit is prepended if there are more chunks
+                            // to come and 0 if it is the last chunk. This encoding uses at most 3 bytes. Example:
+                            // Decimal: 53,241
+                            // Binary: 1100 1111 1111 1001
+                            // 7 bit chunks ordered least->most significant: 1111001 0011111 0000011
+                            // Byte encoding: 11111001 10011111 00000011
+        VarUInt32 =  5,     
+        VarUInt64 =  6,
+        UTF8String = 7,     // Default string parser is a VarUInt32 count, followed by count bytes (not chars!) of UTF8 data
+                            // Example: 0x3,        0x41, 0x42, 0x43
+                            //          Len=3       'A'   'B'   'C'  = "ABC"
+        Guid = 8,
         // add new rules here and increase Count
 
-        Count = 6 
+        Count = 9 
     }
 
 
@@ -422,6 +516,10 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             ParseInstruction.StoreRead(RecordType.Type.GetField("Id"), ParseRule.FixedInt32),
             ParseInstruction.StoreRead(RecordType.Type.GetField("Name"), ParseRule.UTF8String));
         public static ParseRule Field = new ParseRule((int)RecordTypeId.Field, SerializationSize.Complex, RecordType.Field,
+            ParseInstruction.StoreRead(RecordType.Type.GetField("Id"), ParseRule.FixedInt32),
+            ParseInstruction.StoreRead(RecordType.Type.GetField("ContainingTypeId"), ParseRule.FixedInt32),
+            ParseInstruction.StoreRead(RecordType.Type.GetField("FieldTypeId"), ParseRule.FixedInt32),
+            ParseInstruction.StoreRead(RecordType.Type.GetField("Name"), ParseRule.UTF8String));
 
 
         public int Id;

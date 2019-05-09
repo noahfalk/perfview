@@ -564,5 +564,22 @@ namespace TraceEventTests
             Assert.Equal(record.Number32, expectedRecord.Number32);
             Assert.Equal(record.Number64, expectedRecord.Number64);
         }
+
+        [Fact]
+        void BinaryReaderTest()
+        {
+            MemoryStream ms = new MemoryStream();
+            BinaryWriter writer = new BinaryWriter(ms);
+            string s = new string('a', 200);
+            writer.Write(s);
+            Assert.Equal(202, ms.Position);
+            byte a = ms.ToArray()[0];
+            byte b = ms.ToArray()[1];
+            byte c = ms.ToArray()[2];
+            byte d = ms.ToArray()[3];
+            ms.Position = 0;
+            BinaryReader reader = new BinaryReader(ms);
+            
+        }
     }
 }
