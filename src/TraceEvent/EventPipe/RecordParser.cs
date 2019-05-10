@@ -7,30 +7,38 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace Microsoft.Diagnostics.Tracing.EventPipe
 {
     // RecordType and RecordField have circular references in their static fields so we need to
     // set that up explicitly
-    internal static class RecordTypeInitializer
+    internal static class RecordTypeAndFieldInitializer
     {
         public static void Init()
         {
-            lock(typeof(RecordTypeInitializer))
+            lock (typeof(RecordTypeAndFieldInitializer))
             {
                 if (RecordType.Type != null)
                 {
                     return;
                 }
-                RecordType.Type = new RecordType(0, "Type", typeof(RecordType));
-                RecordType.Field = new RecordType(1, "Field", typeof(RecordField));
-                RecordType.Type.AddField(RecordField.TypeName = new RecordField(0, "Name", RecordType.Type, RecordType.String));
-                RecordType.Type.AddField(RecordField.TypeId = new RecordField(1, "Id", RecordType.Type, RecordType.Int32));
-                RecordType.Field.AddField(RecordField.FieldName = new RecordField(2, "Name", RecordType.Field, RecordType.String));
-                RecordType.Field.AddField(RecordField.FieldId = new RecordField(3, "Id", RecordType.Field, RecordType.Int32));
-                RecordType.Field.AddField(RecordField.FieldContainingType = new RecordField(4, "ContainingType", RecordType.Field, RecordType.Type));
-                RecordType.Field.AddField(RecordField.FieldFieldType = new RecordField(5, "FieldType", RecordType.Field, RecordType.Type));
+                RecordType.Type = new RecordType(100, "Type", typeof(RecordType));
+                RecordType.Field = new RecordType(101, "Field", typeof(RecordField));
+                RecordType.Stream = new RecordType(102, "Stream", typeof(RecordStream));
+                RecordType.Table = new RecordType(103, "Table", typeof(RecordTable));
+                RecordType.Type.AddField(RecordField.TypeName = new RecordField(1, "Name", RecordType.Type, RecordType.String));
+                RecordType.Type.AddField(RecordField.TypeId = new RecordField(2, "Id", RecordType.Type, RecordType.Int32));
+                RecordType.Field.AddField(RecordField.FieldName = new RecordField(3, "Name", RecordType.Field, RecordType.String));
+                RecordType.Field.AddField(RecordField.FieldId = new RecordField(4, "Id", RecordType.Field, RecordType.Int32));
+                RecordType.Field.AddField(RecordField.FieldContainingType = new RecordField(5, "ContainingType", RecordType.Field, RecordType.Type));
+                RecordType.Field.AddField(RecordField.FieldFieldType = new RecordField(6, "FieldType", RecordType.Field, RecordType.Type));
+                RecordType.Stream.AddField(RecordField.StreamName = new RecordField(7, "Name", RecordType.Stream, RecordType.String));
+                RecordType.Stream.AddField(RecordField.StreamId = new RecordField(8, "Id", RecordType.Stream, RecordType.Int32));
+                RecordType.Stream.AddField(RecordField.StreamItemType = new RecordField(9, "ItemType", RecordType.Stream, RecordType.Type));
+                RecordType.Table.AddField(RecordField.TableName = new RecordField(10, "Name", RecordType.Table, RecordType.String));
+                RecordType.Table.AddField(RecordField.TypeId = new RecordField(11, "Id", RecordType.Table, RecordType.Int32));
+                RecordType.Table.AddField(RecordField.TableItemType = new RecordField(12, "ItemType", RecordType.Table, RecordType.Type));
+                RecordType.Table.AddField(RecordField.TablePrimaryKeyField = new RecordField(13, "PrimaryKeyField", RecordType.Table, RecordType.Field));
             }
         }
     }
@@ -39,7 +47,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
     {
         // Well-known primitive types
         public static RecordType Boolean = new RecordType((int)TypeCode.Boolean, "Boolean", typeof(bool));
-        public static RecordType Byte = new RecordType((int)TypeCode.Byte, "UInt8", typeof(byte));
+        public static RecordType UInt8 = new RecordType((int)TypeCode.Byte, "UInt8", typeof(byte));
         public static RecordType Int16 = new RecordType((int)TypeCode.Int16, "Int16", typeof(short));
         public static RecordType Int32 = new RecordType((int)TypeCode.Int32, "Int32", typeof(int));
         public static RecordType Int64 = new RecordType((int)TypeCode.Int64, "Int64", typeof(long));
@@ -47,12 +55,14 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public static RecordType Guid = new RecordType(19, "Guid", typeof(Guid));
 
         // Well-known record types
-        public static RecordType Type;  // initialized by RecordTypeInitializer
-        public static RecordType Field; // initialized by RecordTypeInitializer
+        public static RecordType Type;
+        public static RecordType Field;
+        public static RecordType Stream;
+        public static RecordType Table;
 
         static RecordType()
         {
-            RecordTypeInitializer.Init();
+            RecordTypeAndFieldInitializer.Init();
         }
 
         public int Id;
@@ -175,6 +185,11 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return GetBackingFieldExpression(record, this, 0, fieldPath);
         }
 
+        public override string ToString()
+        {
+            return Name + "(" + Id + ")";
+        }
+
         FieldPathGetterSetter GetOrCreateFieldGetterSetter(RecordField[] fieldPath)
         {
             foreach (FieldPathGetterSetter getterSetter in _fieldDelegates)
@@ -263,16 +278,23 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
     internal class RecordField : Record
     {
         // well-known fields
-        public static RecordField TypeName;            // initialized by RecordTypeInitializer
-        public static RecordField TypeId;              // initialized by RecordTypeInitializer
-        public static RecordField FieldName;           // initialized by RecordTypeInitializer
-        public static RecordField FieldId;             // initialized by RecordTypeInitializer
-        public static RecordField FieldContainingType; // initialized by RecordTypeInitializer
-        public static RecordField FieldFieldType;      // initialized by RecordTypeInitializer
+        public static RecordField TypeName;
+        public static RecordField TypeId;
+        public static RecordField FieldName;
+        public static RecordField FieldId;
+        public static RecordField FieldContainingType; 
+        public static RecordField FieldFieldType;      
+        public static RecordField StreamName;
+        public static RecordField StreamId;
+        public static RecordField StreamItemType;
+        public static RecordField TableName;
+        public static RecordField TableId;
+        public static RecordField TableItemType;
+        public static RecordField TablePrimaryKeyField;
 
         static RecordField()
         {
-            RecordTypeInitializer.Init();
+            RecordTypeAndFieldInitializer.Init();
         }
 
         public int Id;
@@ -284,13 +306,17 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public int DynamicFieldIndex;
 
         public RecordField() { }
-
         public RecordField(int id, string name, RecordType containingType, RecordType fieldType)
         {
             Id = id;
             Name = name;
             ContainingType = containingType;
             FieldType = fieldType;
+        }
+
+        public override string ToString()
+        {
+            return ContainingType.Name + "." + Name + "(" + Id + ")";
         }
     }
 
@@ -302,7 +328,8 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         StoreFieldLookup,
         AddConstant,
         AddRead,
-        AddField
+        AddField,
+        Publish
     }
 
     internal class ParseInstruction
@@ -336,6 +363,13 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 LookupTable = lookupTable
             };
         }
+        public static ParseInstruction Publish(RecordStream publishStream)
+        {
+            return new ParseInstruction(ParseInstructionType.Publish, null)
+            {
+                PublishStream = publishStream
+            };
+        }
 
         public ParseInstructionType InstructionType { get; private set; }
         public object Constant { get; private set; }
@@ -343,6 +377,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public RecordField[] LoadFieldPath { get; private set; }
         public ParseRule ParseRule { get; private set; }
         public RecordTable LookupTable { get; private set; }
+        public RecordStream PublishStream { get; private set; }
 
         private Action<IStreamReader, Record> _cachedExecuteAction;
 
@@ -377,6 +412,14 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                             LoadFieldPath, DestinationField.FieldType.ReflectionType);
                         _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, readFieldExpression, DestinationField);
                         break;
+                    case ParseInstructionType.StoreFieldLookup:
+                        Expression lookupExpression = RecordParseCodeGen.GetFieldReadLookupExpression(RecordParseCodeGen.RecordParameter,
+                            LoadFieldPath, LookupTable, DestinationField.FieldType.ReflectionType);
+                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, lookupExpression, DestinationField);
+                        break;
+                    case ParseInstructionType.Publish:
+                        _cachedExecuteAction = RecordParseCodeGen.GetPublishDelegate(RecordParseCodeGen.RecordParameter, PublishStream);
+                        break;
                 }
             }
             return _cachedExecuteAction;
@@ -406,15 +449,48 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return Expression.Lambda<Func<T,U>>(body, record).Compile();
         }
 
+        public static Action<IStreamReader, Record> GetPublishDelegate(ParameterExpression record, RecordStream stream)
+        {
+            RecordType recordType = stream.ItemType;
+            Expression recordStrong = record;
+            if (record.Type != recordType.ReflectionType)
+            {
+                // the record parameter may have a weaker static type that we need to cast off
+                recordStrong = Expression.Convert(record, recordType.ReflectionType);
+            }
+            MethodInfo addMethod = stream.GetType().GetMethod("Add");
+            Expression body = Expression.Call(Expression.Constant(stream), addMethod, recordStrong);
+            return Expression.Lambda<Action<IStreamReader, Record>>(body, StreamReaderParameter, record).Compile();
+        }
+
         public static Expression GetFieldReadExpression(Expression record, RecordField[] fieldPath, Type targetType)
         {
             RecordType recordType = fieldPath[0].ContainingType;
+            if (record.Type != recordType.ReflectionType)
+            {
+                // the record parameter may have a weaker static type that we need to cast off
+                record = Expression.Convert(record, recordType.ReflectionType);
+            }
             Expression fieldRead = recordType.CreateFieldExpression(record, fieldPath);
             if (fieldRead.Type != targetType)
             {
                 fieldRead = Expression.Convert(fieldRead, targetType);
             }
             return fieldRead;
+        }
+
+        public static Expression GetFieldReadLookupExpression(Expression record, RecordField[] fieldPath, RecordTable table, Type targetType)
+        {
+            Expression fieldRead = GetFieldReadExpression(record, fieldPath, typeof(int));
+            Type tableType = typeof(RecordTable<>).MakeGenericType(table.ItemType.ReflectionType);
+            Expression tableExpression = Expression.Constant(table, tableType);
+            MethodInfo lookupMethod = tableType.GetMethod("Get");
+            Expression lookupResult = Expression.Call(tableExpression, lookupMethod, fieldRead);
+            if (lookupResult.Type != targetType)
+            {
+                lookupResult = Expression.Convert(lookupResult, targetType);
+            }
+            return lookupResult;
         }
 
         public static Expression GetParseExpression(ParseRule parseRule, Expression streamReader = null)
@@ -582,7 +658,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
     internal class ParseRule
     {
         public static ParseRule Boolean = new ParseRule((int)PrimitiveParseRuleId.Boolean, RecordType.Boolean);
-        public static ParseRule FixedUInt8 = new ParseRule((int)PrimitiveParseRuleId.FixedUInt8, RecordType.Byte);
+        public static ParseRule FixedUInt8 = new ParseRule((int)PrimitiveParseRuleId.FixedUInt8, RecordType.UInt8);
         public static ParseRule FixedInt16 = new ParseRule((int)PrimitiveParseRuleId.FixedInt16, RecordType.Int16);
         public static ParseRule FixedInt32 = new ParseRule((int)PrimitiveParseRuleId.FixedInt32, RecordType.Int32);
         public static ParseRule FixedInt64 = new ParseRule((int)PrimitiveParseRuleId.FixedInt64, RecordType.Int64);
@@ -652,63 +728,152 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
     internal class RecordStream : Record
     {
         public string Name;
-        public int Id;
         public RecordType ItemType;
-    }
+        public int Id;
 
+    }
     internal class RecordStream<T> : RecordStream
-    {
+    {   
+        public RecordStream(string name, RecordType itemType)
+        {
+            Name = name;
+            ItemType = itemType;
+        }
         public virtual void Add(T item) { }
     }
-
     internal class RecordTable : RecordStream
     {
         public RecordField PrimaryKeyField;
     }
-
     internal class RecordTable<T> : RecordTable
     {
         Func<T, int> _getKeyDelegate;
         Dictionary<int, T> _lookupTable = new Dictionary<int, T>();
 
-        public void OnParseComplete()
+        public RecordTable(string name, RecordField primaryKeyField)
         {
+            Name = name;
+            ItemType = primaryKeyField.ContainingType;
+            PrimaryKeyField = primaryKeyField;
             _getKeyDelegate = RecordParseCodeGen.GetRecordFieldDelegate<T, int>(ItemType, PrimaryKeyField);
         }
 
-        public void Add(T item)
+        public virtual T Add(T item)
         {
             int key = _getKeyDelegate(item);
             _lookupTable.Add(key, item);
+            return item;
         }
-
+        public bool ContainsKey(int key)
+        {
+            return _lookupTable.ContainsKey(key);
+        }
         public T Get(int key)
         {
             return _lookupTable[key];
         }
     }
 
-    internal class ParseContext
+    internal class RecordParserContext
     {
-        static int MaxCountTables = 1000;
-        List<object> _lookupTables = new List<object>();
+        public RecordTypeTable Types { get; private set; } = new RecordTypeTable();
+        public RecordFieldTable Fields { get; private set; } = new RecordFieldTable();
+    }
 
-        public void RegisterLookupTable<T>(int tableId, IDictionary<int,T> table)
+    internal class RecordTypeTable : RecordTable<RecordType>
+    {
+        Dictionary<string, RecordType> _nameToType = new Dictionary<string, RecordType>();
+
+        public RecordTypeTable() : base("Type", RecordType.Type.GetField("Id"))
         {
-            if(tableId >= MaxCountTables)
+            Id = 1;
+            Add(RecordType.Boolean);
+            Add(RecordType.UInt8);
+            Add(RecordType.Int16);
+            Add(RecordType.Int32);
+            Add(RecordType.Int64);
+            Add(RecordType.String);
+            Add(RecordType.Guid);
+            Add(RecordType.Type);
+            Add(RecordType.Field);
+        }
+
+        public override RecordType Add(RecordType item)
+        {
+            if(string.IsNullOrEmpty(item.Name))
             {
-                throw new ArgumentOutOfRangeException("tableId");
+                throw new ArgumentException("RecordType Name must be non-empty");
             }
-            while(_lookupTables.Count <= tableId)
+            if(ContainsKey(item.Id))
             {
-                _lookupTables.Add(null);
+                throw new ArgumentException("Can not add new type " + item.ToString() + " because the Id is already in use by " + Get(item.Id).ToString());
             }
-            _lookupTables[tableId] = table;
+            if(_nameToType.ContainsKey(item.Name))
+            {
+                throw new ArgumentException("Can not add new type " + item.ToString() + " because the Name is already in use by " + Get(item.Name).ToString());
+            }
+            _nameToType.Add(item.Name, item);
+            return base.Add(item);
+        }
+
+        public RecordType Get(string name)
+        {
+            return _nameToType[name];
         }
     }
 
-    internal class RecordParser<T>
+    internal class RecordFieldTable : RecordTable<RecordField>
     {
-        
+        public RecordFieldTable() : base("Field", RecordType.Field.GetField("Id"))
+        {
+            Id = 2;
+            base.Add(RecordField.TypeName);
+            base.Add(RecordField.TypeId);
+            base.Add(RecordField.FieldName);
+            base.Add(RecordField.FieldId);
+            base.Add(RecordField.FieldContainingType);
+            base.Add(RecordField.FieldFieldType);
+        }
+
+        public override RecordField Add(RecordField item)
+        {
+            if (string.IsNullOrEmpty(item.Name))
+            {
+                throw new ArgumentException("RecordField.Name must be non-empty");
+            }
+            if (item.ContainingType == null)
+            {
+                throw new ArgumentException("RecordField.ContainingType must be non-null");
+            }
+            if (item.FieldType == null)
+            {
+                throw new ArgumentException("RecordField.FieldType must be non-null");
+            }
+            if (ContainsKey(item.Id))
+            {
+                throw new ArgumentException("Can not add new field " + item.ToString() + " because the Id is already in use by " + Get(item.Id).ToString());
+            }
+            RecordField existingField = item.ContainingType.GetField(item.Name);
+            if (existingField != null)
+            {
+                throw new ArgumentException("Can not add new field " + item.ToString() + " because the Name is already in use by " + existingField.ToString());
+            }
+            return base.Add(item);
+        }
+    }
+    internal class RecordTableTable : RecordTable<RecordTable>
+    {
+        public RecordTableTable() : base("Table", RecordField.TableId)
+        {
+            Id = 3;
+            base.Add(new RecordTypeTable());
+            base.Add(new RecordFieldTable());
+            base.Add(this);
+            base.Add(new RecordStreamTable());
+        }
+    }
+    internal class RecordStreamTable : RecordTable<RecordStream>
+    {
+        public RecordStreamTable() : base("Stream", RecordField.StreamId) {}
     }
 }
