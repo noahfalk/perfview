@@ -26,21 +26,37 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 RecordType.Field = new RecordType(101, "Field", typeof(RecordField));
                 RecordType.Stream = new RecordType(102, "Stream", typeof(RecordStream));
                 RecordType.Table = new RecordType(103, "Table", typeof(RecordTable));
+                RecordType.ParseRule = new RecordType(104, "ParseRule", typeof(ParseRule));
                 RecordType.Type.AddField(RecordField.TypeName = new RecordField(1, "Name", RecordType.Type, RecordType.String));
                 RecordType.Type.AddField(RecordField.TypeId = new RecordField(2, "Id", RecordType.Type, RecordType.Int32));
+                RecordType.Type.FinishInit();
                 RecordType.Field.AddField(RecordField.FieldName = new RecordField(3, "Name", RecordType.Field, RecordType.String));
                 RecordType.Field.AddField(RecordField.FieldId = new RecordField(4, "Id", RecordType.Field, RecordType.Int32));
                 RecordType.Field.AddField(RecordField.FieldContainingType = new RecordField(5, "ContainingType", RecordType.Field, RecordType.Type));
                 RecordType.Field.AddField(RecordField.FieldFieldType = new RecordField(6, "FieldType", RecordType.Field, RecordType.Type));
+                RecordType.Field.FinishInit();
                 RecordType.Stream.AddField(RecordField.StreamName = new RecordField(7, "Name", RecordType.Stream, RecordType.String));
                 RecordType.Stream.AddField(RecordField.StreamId = new RecordField(8, "Id", RecordType.Stream, RecordType.Int32));
                 RecordType.Stream.AddField(RecordField.StreamItemType = new RecordField(9, "ItemType", RecordType.Stream, RecordType.Type));
+                RecordType.Stream.FinishInit();
                 RecordType.Table.AddField(RecordField.TableName = new RecordField(10, "Name", RecordType.Table, RecordType.String));
-                RecordType.Table.AddField(RecordField.TypeId = new RecordField(11, "Id", RecordType.Table, RecordType.Int32));
+                RecordType.Table.AddField(RecordField.TableId = new RecordField(11, "Id", RecordType.Table, RecordType.Int32));
                 RecordType.Table.AddField(RecordField.TableItemType = new RecordField(12, "ItemType", RecordType.Table, RecordType.Type));
                 RecordType.Table.AddField(RecordField.TablePrimaryKeyField = new RecordField(13, "PrimaryKeyField", RecordType.Table, RecordType.Field));
+                RecordType.Table.FinishInit();
+                RecordType.ParseRule.AddField(RecordField.ParseRuleId = new RecordField(14, "Id", RecordType.ParseRule, RecordType.Int32));
+                RecordType.ParseRule.AddField(RecordField.ParseRuleParsedType = new RecordField(15, "ParsedType", RecordType.ParseRule, RecordType.Type));
+                //ParseInstruction[] Instructions
+                RecordType.ParseRule.FinishInit();
             }
         }
+    }
+
+    internal class WeakFieldTypeInfo
+    {
+        public Type CanonFieldSlotType;
+        public int TypeIndex;
+        public int FieldCount;
     }
 
     internal class RecordType : Record
@@ -59,6 +75,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public static RecordType Field;
         public static RecordType Stream;
         public static RecordType Table;
+        public static RecordType ParseRule;
 
         static RecordType()
         {
@@ -68,15 +85,8 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public int Id;
         public string Name;
         public Type ReflectionType;
-
-        class WeakFieldTypeInfo
-        {
-            public Type CanonFieldSlotType;
-            public int TypeIndex;
-            public int FieldCount;
-        }
-        int _countWeakFieldTypes;
-        Dictionary<int, WeakFieldTypeInfo> _weakFieldTypesByIndex = new Dictionary<int, WeakFieldTypeInfo>();
+        public int CountWeakFieldTypes;
+        public Dictionary<int, WeakFieldTypeInfo> WeakFieldTypesByIndex = new Dictionary<int, WeakFieldTypeInfo>();
         Dictionary<Type, WeakFieldTypeInfo> _weakFieldTypes = new Dictionary<Type, WeakFieldTypeInfo>();
         List<RecordField> _fields = new List<RecordField>();
 
@@ -89,6 +99,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         }
         List<FieldPathGetterSetter> _fieldDelegates = new List<FieldPathGetterSetter>();
         Action<Record> _initRecord;
+        Func<Record> _createRecord;
         ParameterExpression _recordParameterExpression;
 
         public RecordType()
@@ -96,31 +107,52 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             _recordParameterExpression = Expression.Parameter(typeof(Record), "record");
         }
 
-        public RecordType(int id, string name, Type accessType, params RecordField[] fields) : this()
+        public RecordType(int id, string name, Type accessType) : this()
         {
             Id = id;
             Name = name;
             ReflectionType = accessType;
-            if(fields != null)
+        }
+
+        public void FinishInit()
+        {
+            InitDelegates();
+        }
+
+        private void InitDelegates()
+        {
+            if (typeof(Record).IsAssignableFrom(ReflectionType))
             {
-                foreach (RecordField f in fields)
-                    AddField(f);
+                _initRecord = RecordParserCodeGen.GetInitRecordDelegate(this);
+                _createRecord = RecordParserCodeGen.GetCreateInstanceDelegate<Record>(this);
             }
+        }
+
+        public void InitInstance(Record record)
+        {
+            _initRecord(record);
+        }
+
+        public T CreateInstance<T>() where T : Record
+        {
+            T val = (T) _createRecord();
+            Debug.Assert(val != null);
+            return val;
         }
 
         public void AddField(RecordField field)
         {
-            if (null == GetStrongBackingField(field))
+            if (null == RecordParserCodeGen.GetStrongBackingField(field))
             {
-                Type fieldSlotType = GetCanonFieldSlotType(field);
+                Type fieldSlotType = RecordParserCodeGen.GetCanonFieldSlotType(field);
                 WeakFieldTypeInfo typeFieldInfo;
                 if (!_weakFieldTypes.TryGetValue(fieldSlotType, out typeFieldInfo))
                 {
                     typeFieldInfo = new WeakFieldTypeInfo();
-                    typeFieldInfo.TypeIndex = _countWeakFieldTypes++;
+                    typeFieldInfo.TypeIndex = CountWeakFieldTypes++;
                     typeFieldInfo.CanonFieldSlotType = fieldSlotType;
                     _weakFieldTypes[fieldSlotType] = typeFieldInfo;
-                    _weakFieldTypesByIndex[typeFieldInfo.TypeIndex] = typeFieldInfo;
+                    WeakFieldTypesByIndex[typeFieldInfo.TypeIndex] = typeFieldInfo;
                 }
                 field.DynamicFieldTypeIndex = typeFieldInfo.TypeIndex;
                 field.DynamicFieldIndex = typeFieldInfo.FieldCount++;
@@ -134,55 +166,10 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return _fields.Where(f => f.Name == fieldName).FirstOrDefault();
         }
 
-        private Type GetCanonFieldSlotType(RecordField field)
-        {
-            Type accessType = field.FieldType.ReflectionType;
-            if (accessType.GetTypeInfo().IsValueType)
-            {
-                return accessType;
-            }
-            else
-            {
-                return typeof(object);
-            }
-        }
-
         public Delegate GetFieldReadDelegate(RecordField[] fieldPath)
         {
             FieldPathGetterSetter getterSetter = GetOrCreateFieldGetterSetter(fieldPath);
             return getterSetter.Getter;
-        }
-
-        public void InitRecord(Record record)
-        {
-            if (_initRecord == null)
-            {
-                Expression dynamicFieldsField = GetDynamicFieldsField(_recordParameterExpression);
-                List<Expression> typedArrays = new List<Expression>();
-                for (int i = 0; i < _countWeakFieldTypes; i++)
-                {
-                    WeakFieldTypeInfo weakFieldTypeInfo = _weakFieldTypesByIndex[i];
-                    Type slotType = weakFieldTypeInfo.CanonFieldSlotType;
-                    typedArrays.Add(Expression.NewArrayBounds(slotType, Expression.Constant(weakFieldTypeInfo.FieldCount)));
-                }
-                Expression weaklyTypeFields = Expression.NewArrayInit(typeof(object), typedArrays);
-                Expression body = Expression.Assign(dynamicFieldsField, weaklyTypeFields);
-                _initRecord = (Action<Record>)Expression.Lambda(typeof(Action<Record>), body, _recordParameterExpression).Compile();
-            }
-            _initRecord(record);
-        }
-
-        public Expression GetStoreFieldExpression(Expression record, Expression fieldVal, RecordField field)
-        {
-            Expression fieldRef = GetBackingFieldExpression(record, this, 0, new RecordField[] { field });
-            Expression castedFieldVal = Expression.ConvertChecked(fieldVal, fieldRef.Type);
-            var body = Expression.Assign(fieldRef, castedFieldVal);
-            return body;
-        }
-
-        public Expression CreateFieldExpression(Expression record, RecordField[] fieldPath)
-        {
-            return GetBackingFieldExpression(record, this, 0, fieldPath);
         }
 
         public override string ToString()
@@ -202,7 +189,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             FieldPathGetterSetter newGetterSetter = new FieldPathGetterSetter();
             Type fieldType = fieldPath[fieldPath.Length - 1].FieldType.ReflectionType;
             newGetterSetter.FieldPath = fieldPath;
-            newGetterSetter.FieldExpression = CreateFieldExpression(_recordParameterExpression, fieldPath);
+            newGetterSetter.FieldExpression = RecordParserCodeGen.GetFieldExpression(_recordParameterExpression, fieldPath);
             newGetterSetter.Getter = CreateGetFieldDelegate(newGetterSetter.FieldExpression, fieldType, _recordParameterExpression);
             _fieldDelegates.Add(newGetterSetter);
             return newGetterSetter;
@@ -217,61 +204,6 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 field = Expression.Convert(field, fieldType);
             }
             return Expression.Lambda(delegateType, field, recordParameter).Compile();
-        }
-
-        Expression GetBackingFieldExpression(Expression recordObj, RecordType recordType, int level, RecordField[] fieldPath)
-        {
-            RecordField derefField = fieldPath[level];
-            Debug.Assert(typeof(Record).IsAssignableFrom(recordObj.Type));
-            Debug.Assert(recordType.ReflectionType == recordObj.Type);
-            Expression fieldValExpr = null;
-            FieldInfo strongBackingField = GetStrongBackingField(derefField);
-            if (strongBackingField != null)
-            {
-                fieldValExpr = Expression.Field(recordObj, strongBackingField);
-            }
-            else
-            {
-                Expression dynamicFieldsArray = GetDynamicFieldsField(recordObj);
-                Expression dynamicFieldsTypedSlotArray = Expression.ArrayAccess(dynamicFieldsArray,
-                                                                 Expression.Constant(derefField.DynamicFieldTypeIndex));
-                Type fieldSlotArrayType = GetCanonFieldSlotType(derefField).MakeArrayType();
-                fieldValExpr = Expression.ArrayAccess(Expression.Convert(dynamicFieldsTypedSlotArray, fieldSlotArrayType),
-                                              Expression.Constant(derefField.DynamicFieldIndex));
-            }
-
-            if (level == fieldPath.Length - 1)
-            {
-                return fieldValExpr;
-            }
-            else
-            {
-                return GetBackingFieldExpression(fieldValExpr, derefField.FieldType, level + 1, fieldPath);
-            }
-        }
-
-        Type GetStrongBackingType()
-        {
-            return (typeof(Record) != ReflectionType && typeof(Record).IsAssignableFrom(ReflectionType)) ? ReflectionType : null;
-        }
-
-        static Expression GetDynamicFieldsField(Expression recordObj)
-        {
-            FieldInfo dynamicFieldsField = recordObj.Type.GetField("DynamicFields", BindingFlags.Public | BindingFlags.Instance);
-            return Expression.Field(recordObj, dynamicFieldsField);
-        }
-
-        static FieldInfo GetStrongBackingField(RecordField recordField)
-        {
-            FieldInfo reflectionField = recordField.ContainingType.GetStrongBackingType()?.GetField(recordField.Name, BindingFlags.Public | BindingFlags.Instance);
-            FieldInfo baseReflectionField = typeof(Record).GetField(recordField.Name, BindingFlags.Public | BindingFlags.Instance);
-            if (reflectionField == null ||
-                baseReflectionField != null ||
-                reflectionField.FieldType != recordField.FieldType.ReflectionType)
-            {
-                return null;
-            }
-            return reflectionField;
         }
     }
 
@@ -291,6 +223,9 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public static RecordField TableId;
         public static RecordField TableItemType;
         public static RecordField TablePrimaryKeyField;
+        public static RecordField ParseRuleId;
+        public static RecordField ParseRuleParsedType;
+        public static RecordField ParseRuleInstructions;
 
         static RecordField()
         {
@@ -401,24 +336,24 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 {
                     case (ParseInstructionType.StoreConstant):
                         Expression constantExpression = Expression.Constant(Constant);
-                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, constantExpression, DestinationField);
+                        _cachedExecuteAction = RecordParserCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, constantExpression, DestinationField);
                         break;
                     case (ParseInstructionType.StoreRead):
-                        Expression readExpression = RecordParseCodeGen.GetParseExpression(ParseRule);
-                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, readExpression, DestinationField);
+                        Expression readExpression = RecordParserCodeGen.GetParseExpression(ParseRule);
+                        _cachedExecuteAction = RecordParserCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, readExpression, DestinationField);
                         break;
                     case ParseInstructionType.StoreField:
-                        Expression readFieldExpression = RecordParseCodeGen.GetFieldReadExpression(RecordParseCodeGen.RecordParameter,
+                        Expression readFieldExpression = RecordParserCodeGen.GetFieldReadExpression(RecordParserCodeGen.RecordParameter,
                             LoadFieldPath, DestinationField.FieldType.ReflectionType);
-                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, readFieldExpression, DestinationField);
+                        _cachedExecuteAction = RecordParserCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, readFieldExpression, DestinationField);
                         break;
                     case ParseInstructionType.StoreFieldLookup:
-                        Expression lookupExpression = RecordParseCodeGen.GetFieldReadLookupExpression(RecordParseCodeGen.RecordParameter,
+                        Expression lookupExpression = RecordParserCodeGen.GetFieldReadLookupExpression(RecordParserCodeGen.RecordParameter,
                             LoadFieldPath, LookupTable, DestinationField.FieldType.ReflectionType);
-                        _cachedExecuteAction = RecordParseCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, lookupExpression, DestinationField);
+                        _cachedExecuteAction = RecordParserCodeGen.GetStoreFieldDelegate(DestinationField.ContainingType, lookupExpression, DestinationField);
                         break;
                     case ParseInstructionType.Publish:
-                        _cachedExecuteAction = RecordParseCodeGen.GetPublishDelegate(RecordParseCodeGen.RecordParameter, PublishStream);
+                        _cachedExecuteAction = RecordParserCodeGen.GetPublishDelegate(RecordParserCodeGen.RecordParameter, PublishStream);
                         break;
                 }
             }
@@ -426,8 +361,51 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         }
     }
 
-    internal static class RecordParseCodeGen
+    internal static class RecordParserCodeGen
     {
+        public static Func<T> GetCreateInstanceDelegate<T>(RecordType recordType)
+        {
+            Debug.Assert(typeof(T).IsAssignableFrom(recordType.ReflectionType));
+            Expression createExpression = Expression.New(recordType.ReflectionType);
+            ParameterExpression recordVar = Expression.Variable(recordType.ReflectionType);
+            List<Expression> statements = new List<Expression>();
+            statements.Add(Expression.Assign(recordVar, createExpression));
+            statements.AddRange(GetInitRecordStatements(recordVar, recordType));
+            if(recordVar.Type != typeof(T))
+            {
+                statements.Add(Expression.Convert(recordVar, typeof(T)));
+            }
+            else
+            {
+                statements.Add(recordVar);
+            }
+            return Expression.Lambda<Func<T>>(Expression.Block(new ParameterExpression[] { recordVar }, statements)).Compile();
+        }
+
+        public static Action<Record> GetInitRecordDelegate(RecordType recordType)
+        {
+            Expression block = Expression.Block(GetInitRecordStatements(RecordParameter, recordType));
+            return Expression.Lambda<Action<Record>>(block, RecordParameter).Compile();
+        }
+
+        public static IEnumerable<Expression> GetInitRecordStatements(ParameterExpression record, RecordType recordType)
+        {
+            yield return Expression.Assign(Expression.Field(record, RecordRecordTypeField), Expression.Constant(recordType));
+            if (recordType.CountWeakFieldTypes != 0)
+            {
+                Expression dynamicFieldsField = Expression.Field(record, RecordDynamicFieldsField);
+                List<Expression> typedArrays = new List<Expression>();
+                for (int i = 0; i < recordType.CountWeakFieldTypes; i++)
+                {
+                    WeakFieldTypeInfo weakFieldTypeInfo = recordType.WeakFieldTypesByIndex[i];
+                    Type slotType = weakFieldTypeInfo.CanonFieldSlotType;
+                    typedArrays.Add(Expression.NewArrayBounds(slotType, Expression.Constant(weakFieldTypeInfo.FieldCount)));
+                }
+                Expression weaklyTypeFields = Expression.NewArrayInit(typeof(object), typedArrays);
+                yield return Expression.Assign(dynamicFieldsField, weaklyTypeFields); 
+            }
+        }
+
         public static Action<IStreamReader, Record> GetStoreFieldDelegate(RecordType recordType, Expression fieldVal, RecordField field)
         {
             Expression record = RecordParameter;
@@ -435,7 +413,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             {
                 record = Expression.Convert(record, recordType.ReflectionType);
             }
-            Expression body = recordType.GetStoreFieldExpression(record, fieldVal, field);
+            Expression body = GetStoreFieldExpression(record, fieldVal, field);
             var delegateType = typeof(Action<,>).MakeGenericType(typeof(IStreamReader), RecordParameter.Type);
             return (Action<IStreamReader, Record>)
                 Expression.Lambda(delegateType, body, StreamReaderParameter, RecordParameter).Compile();
@@ -471,7 +449,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 // the record parameter may have a weaker static type that we need to cast off
                 record = Expression.Convert(record, recordType.ReflectionType);
             }
-            Expression fieldRead = recordType.CreateFieldExpression(record, fieldPath);
+            Expression fieldRead = GetFieldExpression(record, fieldPath);
             if (fieldRead.Type != targetType)
             {
                 fieldRead = Expression.Convert(fieldRead, targetType);
@@ -527,8 +505,86 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             }
         }
 
+        public static FieldInfo GetStrongBackingField(RecordField recordField)
+        {
+            FieldInfo reflectionField = GetStrongBackingType(recordField.ContainingType)?.GetField(recordField.Name, BindingFlags.Public | BindingFlags.Instance);
+            FieldInfo baseReflectionField = typeof(Record).GetField(recordField.Name, BindingFlags.Public | BindingFlags.Instance);
+            if (reflectionField == null ||
+                baseReflectionField != null ||
+                reflectionField.FieldType != recordField.FieldType.ReflectionType)
+            {
+                return null;
+            }
+            return reflectionField;
+        }
+
+        public static Type GetCanonFieldSlotType(RecordField field)
+        {
+            Type accessType = field.FieldType.ReflectionType;
+            if (accessType.GetTypeInfo().IsValueType)
+            {
+                return accessType;
+            }
+            else
+            {
+                return typeof(object);
+            }
+        }
+
+        public static Expression GetStoreFieldExpression(Expression record, Expression fieldVal, RecordField field)
+        {
+            Expression fieldRef = GetBackingFieldExpression(record, field.ContainingType, 0, new RecordField[] { field });
+            Expression castedFieldVal = Expression.ConvertChecked(fieldVal, fieldRef.Type);
+            var body = Expression.Assign(fieldRef, castedFieldVal);
+            return body;
+        }
+
+        public static Expression GetFieldExpression(Expression record, RecordField[] fieldPath)
+        {
+            return GetBackingFieldExpression(record, fieldPath[0].ContainingType, 0, fieldPath);
+        }
+
+        static Expression GetBackingFieldExpression(Expression recordObj, RecordType recordType, int level, RecordField[] fieldPath)
+        {
+            RecordField derefField = fieldPath[level];
+            Debug.Assert(typeof(Record).IsAssignableFrom(recordObj.Type));
+            Debug.Assert(recordType.ReflectionType == recordObj.Type);
+            Expression fieldValExpr = null;
+            FieldInfo strongBackingField = GetStrongBackingField(derefField);
+            if (strongBackingField != null)
+            {
+                fieldValExpr = Expression.Field(recordObj, strongBackingField);
+            }
+            else
+            {
+                Expression dynamicFieldsArray = Expression.Field(recordObj, RecordDynamicFieldsField);
+                Expression dynamicFieldsTypedSlotArray = Expression.ArrayAccess(dynamicFieldsArray,
+                                                                 Expression.Constant(derefField.DynamicFieldTypeIndex));
+                Type fieldSlotArrayType = GetCanonFieldSlotType(derefField).MakeArrayType();
+                fieldValExpr = Expression.ArrayAccess(Expression.Convert(dynamicFieldsTypedSlotArray, fieldSlotArrayType),
+                                              Expression.Constant(derefField.DynamicFieldIndex));
+            }
+
+            if (level == fieldPath.Length - 1)
+            {
+                return fieldValExpr;
+            }
+            else
+            {
+                return GetBackingFieldExpression(fieldValExpr, derefField.FieldType, level + 1, fieldPath);
+            }
+        }
+
+        static Type GetStrongBackingType(RecordType recordType)
+        {
+            Type reflectionType = recordType.ReflectionType;
+            return (typeof(Record) != reflectionType && typeof(Record).IsAssignableFrom(reflectionType)) ? reflectionType : null;
+        }
+
         public static ParameterExpression StreamReaderParameter = Expression.Parameter(typeof(IStreamReader), "streamReader");
         public static ParameterExpression RecordParameter = Expression.Parameter(typeof(Record), "record");
+        public static FieldInfo RecordDynamicFieldsField = typeof(Record).GetField("DynamicFields", BindingFlags.Public | BindingFlags.Instance);
+        public static FieldInfo RecordRecordTypeField = typeof(Record).GetField("_recordType", BindingFlags.NonPublic | BindingFlags.Instance);
     }
 
     internal class ParseFunctions
@@ -655,7 +711,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
 
 
-    internal class ParseRule
+    internal class ParseRule : Record
     {
         public static ParseRule Boolean = new ParseRule((int)PrimitiveParseRuleId.Boolean, RecordType.Boolean);
         public static ParseRule FixedUInt8 = new ParseRule((int)PrimitiveParseRuleId.FixedUInt8, RecordType.UInt8);
@@ -664,16 +720,6 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public static ParseRule FixedInt64 = new ParseRule((int)PrimitiveParseRuleId.FixedInt64, RecordType.Int64);
         public static ParseRule UTF8String = new ParseRule((int)PrimitiveParseRuleId.UTF8String, RecordType.String);
         public static ParseRule Guid = new ParseRule((int)PrimitiveParseRuleId.Guid, RecordType.Guid);
-
-        public static ParseRule Type = new ParseRule(500, RecordType.Type,
-            ParseInstruction.StoreRead(RecordType.Type.GetField("Id"), ParseRule.FixedInt32),
-            ParseInstruction.StoreRead(RecordType.Type.GetField("Name"), ParseRule.UTF8String));
-        public static ParseRule Field = new ParseRule(501, RecordType.Field,
-            ParseInstruction.StoreRead(RecordType.Field.GetField("Id"), ParseRule.FixedInt32),
-            //ParseInstruction.StoreRead(RecordType.Type.GetField("ContainingTypeId"), ParseRule.FixedInt32),
-            //ParseInstruction.StoreRead(RecordType.Type.GetField("FieldTypeId"), ParseRule.FixedInt32),
-            ParseInstruction.StoreRead(RecordType.Field.GetField("Name"), ParseRule.UTF8String));
-
 
         public int Id;
         public RecordType ParsedType;
@@ -700,7 +746,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 // more awkward to work with in the API.
                 throw new InvalidOperationException("Parse not supported for primitive ParseRules");
             }
-            record.Init(ParsedType);
+            ParsedType.InitInstance(record);
             foreach(ParseInstruction instruction in Instructions)
             {
                 instruction.Execute(reader, record);
@@ -712,12 +758,6 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
     {
         public object[] DynamicFields;
         private RecordType _recordType;
-
-        public void Init(RecordType recordType)
-        {
-            _recordType = recordType;
-            _recordType.InitRecord(this);
-        }
 
         public T GetFieldValue<T>(params RecordField[] fieldPath)
         {
@@ -755,7 +795,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             Name = name;
             ItemType = primaryKeyField.ContainingType;
             PrimaryKeyField = primaryKeyField;
-            _getKeyDelegate = RecordParseCodeGen.GetRecordFieldDelegate<T, int>(ItemType, PrimaryKeyField);
+            _getKeyDelegate = RecordParserCodeGen.GetRecordFieldDelegate<T, int>(ItemType, PrimaryKeyField);
         }
 
         public virtual T Add(T item)
@@ -776,8 +816,20 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
     internal class RecordParserContext
     {
-        public RecordTypeTable Types { get; private set; } = new RecordTypeTable();
-        public RecordFieldTable Fields { get; private set; } = new RecordFieldTable();
+        public RecordTypeTable Types { get; private set; }
+        public RecordFieldTable Fields { get; private set; }
+        public RecordTableTable Tables { get; private set; } = new RecordTableTable();
+        public RecordParserContext()
+        {
+            Types = (RecordTypeTable)Tables.Get(1);
+            Fields = (RecordFieldTable)Tables.Get(2);
+        }
+        public T Parse<T>(IStreamReader reader, ParseRule rule) where T : Record
+        {
+            T record = rule.ParsedType.CreateInstance<T>();
+            rule.Parse(reader, record);
+            return record;
+        }
     }
 
     internal class RecordTypeTable : RecordTable<RecordType>
@@ -808,17 +860,38 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             {
                 throw new ArgumentException("Can not add new type " + item.ToString() + " because the Id is already in use by " + Get(item.Id).ToString());
             }
-            if(_nameToType.ContainsKey(item.Name))
+            if(_nameToType.TryGetValue(item.Name, out RecordType existingType))
             {
-                throw new ArgumentException("Can not add new type " + item.ToString() + " because the Name is already in use by " + Get(item.Name).ToString());
+                if (existingType.Id == 0)
+                {
+                    existingType.Id = item.Id;
+                    item = existingType;
+                }
+                else
+                {
+                    throw new ArgumentException("Can not add new type " + item.ToString() + " because the Name is already in use by " + Get(item.Name).ToString());
+                }
             }
-            _nameToType.Add(item.Name, item);
+            else
+            {
+                _nameToType.Add(item.Name, item);
+            }
             return base.Add(item);
         }
 
         public RecordType Get(string name)
         {
             return _nameToType[name];
+        }
+
+        public RecordType GetOrCreate(string name)
+        {
+            if(!_nameToType.TryGetValue(name, out RecordType type))
+            {
+                type = new RecordType(0, name, typeof(Record));
+                _nameToType[name] = type;
+            }
+            return type;
         }
     }
 
@@ -861,19 +934,55 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return base.Add(item);
         }
     }
+    internal class RecordStreamTable : RecordTable<RecordStream>
+    {
+        public RecordStreamTable() : base("Stream", RecordField.StreamId)
+        {
+            Id = 3;
+        }
+    }
     internal class RecordTableTable : RecordTable<RecordTable>
     {
         public RecordTableTable() : base("Table", RecordField.TableId)
         {
             Id = 3;
-            base.Add(new RecordTypeTable());
-            base.Add(new RecordFieldTable());
-            base.Add(this);
-            base.Add(new RecordStreamTable());
+            Streams = new RecordStreamTable();
+            base.Add(Types = new RecordTypeTable());
+            base.Add(Fields = new RecordFieldTable());
+            base.Add(Streams);
+            base.Add(ParseRules = new ParseRuleTable(Types, Fields));
+        }
+        public RecordTypeTable Types { get; private set; }
+        public RecordFieldTable Fields { get; private set; }
+        public RecordStreamTable Streams { get; private set; }
+        public ParseRuleTable ParseRules { get; private set; }
+
+        public override RecordTable Add(RecordTable item)
+        {
+            Streams.Add(item); // tables are also streams
+            return base.Add(item);
         }
     }
-    internal class RecordStreamTable : RecordTable<RecordStream>
+
+    internal class ParseRuleTable : RecordTable<ParseRule>
     {
-        public RecordStreamTable() : base("Stream", RecordField.StreamId) {}
+        public ParseRule Type { get; private set; }
+        public ParseRule Field { get; private set; }
+
+        public ParseRuleTable(RecordTypeTable types, RecordFieldTable fields) : base("ParseRule", RecordField.ParseRuleId)
+        {
+            Id = 5;
+            Type = new ParseRule(1, RecordType.Type,
+                ParseInstruction.StoreRead(RecordType.Type.GetField("Id"), ParseRule.FixedInt32),
+                ParseInstruction.StoreRead(RecordType.Type.GetField("Name"), ParseRule.UTF8String),
+                ParseInstruction.Publish(types));
+            Field = new ParseRule(501, RecordType.Field,
+                ParseInstruction.StoreRead(RecordType.Field.GetField("Id"), ParseRule.FixedInt32),
+                //ParseInstruction.StoreRead(RecordType.Type.GetField("ContainingTypeId"), ParseRule.FixedInt32),
+                //ParseInstruction.StoreRead(RecordType.Type.GetField("FieldTypeId"), ParseRule.FixedInt32),
+                ParseInstruction.StoreRead(RecordType.Field.GetField("Name"), ParseRule.UTF8String),
+                ParseInstruction.Publish(fields));
+        }
+
     }
 }
