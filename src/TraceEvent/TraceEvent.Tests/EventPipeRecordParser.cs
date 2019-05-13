@@ -15,17 +15,27 @@ namespace TraceEventTests
 {
     public class EventPipeRecordParser
     {
-
-       
         class SimpleRecord : Record
         {
             public Guid Guid;
-            public byte Byte;
+            public byte Byte { get; set; }
             public short Number16;
             public int Number32;
             public long Number64;
             public string String;
             public bool Bool;
+
+            public override Record Clone<T>()
+            {
+                SimpleRecord r = (SimpleRecord)base.Clone<SimpleRecord>();
+                r.Guid = Guid;
+                r.Byte = Byte;
+                r.Number16 = Number16;
+                r.Number32 = Number32;
+                r.Number64 = Number64;
+                r.Bool = Bool;
+                return r;
+            }
         }
 
         class ComplexRecordA : Record
@@ -45,9 +55,22 @@ namespace TraceEventTests
             public ComplexRecordA ComplexATwo;
         }
 
+        class SimpleRecordBlockHeader : Record
+        {
+            public short EntryCount;
+        }
+
+        class VariableSizeRecord : Record
+        {
+            public int Size;
+            public byte Byte;
+        }
+
         static class RecordTypes
         {
             public static RecordType SimpleRecord = GetSimpleRecordType<SimpleRecord>();
+            public static RecordType SimpleRecordBlockHeader = GetSimpleRecordBlockHeaderType<SimpleRecordBlockHeader>();
+            public static RecordType VariableSizeRecord = GetVariableSizeRecordType<VariableSizeRecord>();
         }
 
         private static RecordType GetSimpleRecordType<T>()
@@ -74,6 +97,23 @@ namespace TraceEventTests
             return complexTypeA;
         }
 
+        private static RecordType GetSimpleRecordBlockHeaderType<T>()
+        {
+            RecordType type = new RecordType(1002, "SimpleRecordBlockHeader", typeof(T));
+            type.AddField(new RecordField(1010, "EntryCount", type, RecordType.Int16));
+            type.FinishInit();
+            return type;
+        }
+
+        private static RecordType GetVariableSizeRecordType<T>()
+        {
+            RecordType type = new RecordType(1003, "VariableSizedRecord", typeof(T));
+            type.AddField(new RecordField(1011, "Size", type, RecordType.Int32));
+            type.AddField(new RecordField(1012, "Byte", type, RecordType.UInt8));
+            type.FinishInit();
+            return type;
+        }
+
         private Guid ExampleGuid = new Guid(0x12345678, 0x9876, 0x5432, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x1, 0x2);
         private byte ExampleByte = 0xab;
         private short ExampleShort = 0x1234;
@@ -94,7 +134,7 @@ namespace TraceEventTests
                 Bool = ExampleBool
             };
         }
-        private IStreamReader GetSimpleTypeStreamReader(SimpleRecord record = null)
+        private IStreamReader GetSimpleTypeStreamReader(int count = 1, SimpleRecord record = null)
         {
             if (record == null)
             {
@@ -103,13 +143,16 @@ namespace TraceEventTests
             MemoryStream ms = new MemoryStream();
             BinaryWriter writer = new BinaryWriter(ms, Encoding.UTF8);
 
-            writer.Write(record.Guid.ToByteArray());
-            writer.Write(record.Byte);
-            writer.Write(record.Number16);
-            writer.Write(record.Number32);
-            writer.Write(record.Number64);
-            writer.Write(record.String);
-            writer.Write(record.Bool);
+            for (int i = 0; i < count; i++)
+            {
+                writer.Write(record.Guid.ToByteArray());
+                writer.Write(record.Byte);
+                writer.Write(record.Number16);
+                writer.Write(record.Number32);
+                writer.Write(record.Number64 + i);
+                writer.Write(record.String);
+                writer.Write(record.Bool);
+            }
             ms.Position = 0;
             return new PinnedStreamReader(ms);
         }
@@ -122,41 +165,49 @@ namespace TraceEventTests
             // Confirm that we can write to strongly typed fields
             RecordType simpleType = GetSimpleRecordType<SimpleRecord>();
             SimpleRecord record = simpleType.CreateInstance<SimpleRecord>();
-
+            ParameterExpression recordParam = Expression.Parameter(typeof(SimpleRecord).MakeByRefType(), "record");
             Guid g = new Guid(0x12345678, 0x9876, 0x5432, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x1, 0x2);
-            Action<IStreamReader, Record> storeGuid = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant(g), simpleType.GetField("Guid"));
-            storeGuid(null, record);
+            
+            InstructionAction<SimpleRecord> storeGuid = RecordParserCodeGen.GetStoreFieldDelegate<SimpleRecord>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, simpleType.GetField("Guid"),
+                simpleType.GetField("Guid").FieldType, Expression.Constant(g));
+            storeGuid(null, null, ref record);
             Assert.Equal(g, record.Guid);
 
-            Action<IStreamReader, Record> storeByte = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant((byte)0xab), simpleType.GetField("Byte"));
-            storeByte(null, record);
+            InstructionAction<SimpleRecord> storeByte = RecordParserCodeGen.GetStoreFieldDelegate<SimpleRecord>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, simpleType.GetField("Byte"),
+                simpleType.GetField("Byte").FieldType, Expression.Constant((byte)0xab));
+            storeByte(null, null, ref record);
             Assert.Equal(0xab, record.Byte);
 
-            Action<IStreamReader, Record> storeNumber16 = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant((short)17003), simpleType.GetField("Number16"));
-            storeNumber16(null, record);
+            InstructionAction<SimpleRecord> storeNumber16 = RecordParserCodeGen.GetStoreFieldDelegate<SimpleRecord>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, simpleType.GetField("Number16"),
+                simpleType.GetField("Number16").FieldType, Expression.Constant((short)17003));
+            storeNumber16(null, null, ref record);
             Assert.Equal(17003, record.Number16);
 
-            Action<IStreamReader, Record> storeNumber32 = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant(-19004001), simpleType.GetField("Number32"));
-            storeNumber32(null, record);
+            InstructionAction<SimpleRecord> storeNumber32 = RecordParserCodeGen.GetStoreFieldDelegate<SimpleRecord>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, simpleType.GetField("Number32"),
+                simpleType.GetField("Number32").FieldType, Expression.Constant(-19004001));
+            storeNumber32(null, null, ref record);
             Assert.Equal(-19004001, record.Number32);
 
-            Action<IStreamReader, Record> storeNumber64 = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant(0x123456789abcdef), simpleType.GetField("Number64"));
-            storeNumber64(null, record);
+            InstructionAction<SimpleRecord> storeNumber64 = RecordParserCodeGen.GetStoreFieldDelegate<SimpleRecord>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, simpleType.GetField("Number64"),
+                simpleType.GetField("Number64").FieldType, Expression.Constant(0x123456789abcdef));
+            storeNumber64(null, null, ref record);
             Assert.Equal(0x123456789abcdef, record.Number64);
 
-            Action<IStreamReader, Record> storeString = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant("hello"), simpleType.GetField("String"));
-            storeString(null, record);
+            InstructionAction<SimpleRecord> storeString = RecordParserCodeGen.GetStoreFieldDelegate<SimpleRecord>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, simpleType.GetField("String"),
+                simpleType.GetField("String").FieldType, Expression.Constant("hello"));
+            storeString(null, null, ref record);
             Assert.Equal("hello", record.String);
 
-            Action<IStreamReader, Record> storeBool = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant(true), simpleType.GetField("Bool"));
-            storeBool(null, record);
+            InstructionAction<SimpleRecord> storeBool = RecordParserCodeGen.GetStoreFieldDelegate<SimpleRecord>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, simpleType.GetField("Bool"),
+                simpleType.GetField("Bool").FieldType, Expression.Constant(true) );
+            storeBool(null, null, ref record);
             Assert.True(record.Bool);
             
         }
@@ -173,48 +224,56 @@ namespace TraceEventTests
             RecordField number64Field = simpleType.GetField("Number64");
             RecordField stringField = simpleType.GetField("String");
             RecordField boolField = simpleType.GetField("Bool");
+            ParameterExpression recordParam = RecordParserCodeGen.RecordRefParameter;
             Record record = simpleType.CreateInstance<Record>();
 
             Guid g = new Guid(0x12345678, 0x9876, 0x5432, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x1, 0x2);
-            Action<IStreamReader, Record> storeGuid = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant(g), guidField);
-            storeGuid(null, record);
+            InstructionAction<Record> storeGuid = RecordParserCodeGen.GetStoreFieldDelegate<Record>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, guidField,
+                guidField.FieldType, Expression.Constant(g));
+            storeGuid(null, null, ref record);
             Assert.Equal(g, ((Guid[])record.DynamicFields[guidField.DynamicFieldTypeIndex])[guidField.DynamicFieldIndex]);
             Assert.Equal(g, record.GetFieldValue<Guid>(guidField));
 
-            Action<IStreamReader, Record> storeByte = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant((byte)0xab),byteField);
-            storeByte(null, record);
+            InstructionAction<Record> storeByte = RecordParserCodeGen.GetStoreFieldDelegate<Record>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, byteField,
+                byteField.FieldType, Expression.Constant((byte)0xab));
+            storeByte(null, null, ref record);
             Assert.Equal(0xab, ((byte[])record.DynamicFields[byteField.DynamicFieldTypeIndex])[byteField.DynamicFieldIndex]);
             Assert.Equal(0xab, record.GetFieldValue<byte>(byteField));
 
-            Action<IStreamReader, Record> storeNumber16 = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant((short)17003), number16Field);
-            storeNumber16(null, record);
+            InstructionAction<Record> storeNumber16 = RecordParserCodeGen.GetStoreFieldDelegate<Record>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, number16Field,
+                number16Field.FieldType, Expression.Constant((short)17003) );
+            storeNumber16(null, null, ref record);
             Assert.Equal(17003, ((short[])record.DynamicFields[number16Field.DynamicFieldTypeIndex])[number16Field.DynamicFieldIndex]);
             Assert.Equal(17003, record.GetFieldValue<short>(number16Field));
 
-            Action<IStreamReader, Record> storeNumber32 = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant(-19004001), number32Field);
-            storeNumber32(null, record);
+            InstructionAction<Record> storeNumber32 = RecordParserCodeGen.GetStoreFieldDelegate<Record>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, number32Field,
+                number32Field.FieldType, Expression.Constant(-19004001) );
+            storeNumber32(null, null, ref record);
             Assert.Equal(-19004001, ((int[])record.DynamicFields[number32Field.DynamicFieldTypeIndex])[number32Field.DynamicFieldIndex]);
             Assert.Equal(-19004001, record.GetFieldValue<int>(number32Field));
 
-            Action<IStreamReader, Record> storeNumber64 = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant(0x123456789abcdef), number64Field);
-            storeNumber64(null, record);
+            InstructionAction<Record> storeNumber64 = RecordParserCodeGen.GetStoreFieldDelegate<Record>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, number64Field,
+                number64Field.FieldType, Expression.Constant(0x123456789abcdef) );
+            storeNumber64(null, null, ref record);
             Assert.Equal(0x123456789abcdef, ((long[])record.DynamicFields[number64Field.DynamicFieldTypeIndex])[number64Field.DynamicFieldIndex]);
             Assert.Equal(0x123456789abcdef, record.GetFieldValue<long>(number64Field));
 
-            Action<IStreamReader, Record> storeString = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant("hello"), stringField);
-            storeString(null, record);
+            InstructionAction<Record> storeString = RecordParserCodeGen.GetStoreFieldDelegate<Record>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, stringField,
+                stringField.FieldType, Expression.Constant("hello") );
+            storeString(null, null, ref record);
             Assert.Equal("hello", ((object[])record.DynamicFields[stringField.DynamicFieldTypeIndex])[stringField.DynamicFieldIndex]);
             Assert.Equal("hello", record.GetFieldValue<string>(stringField));
 
-            Action<IStreamReader, Record> storeBool = RecordParserCodeGen.GetStoreFieldDelegate(simpleType,
-                Expression.Constant(true),  boolField);
-            storeBool(null, record);
+            InstructionAction<Record> storeBool = RecordParserCodeGen.GetStoreFieldDelegate<Record>(
+                RecordParserCodeGen.LocalVarsParameter, simpleType, recordParam, boolField,
+                boolField.FieldType, Expression.Constant(true)  );
+            storeBool(null, null, ref record);
             Assert.True(((bool[])record.DynamicFields[boolField.DynamicFieldTypeIndex])[boolField.DynamicFieldIndex]);
             Assert.True(record.GetFieldValue<bool>(boolField));
 
@@ -426,32 +485,32 @@ namespace TraceEventTests
             Record record = simpleType.CreateInstance<Record>();
 
             Guid g = new Guid(0x12345678, 0x9876, 0x5432, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x1, 0x2);
-            ParseInstruction instr = ParseInstruction.StoreConstant(guidField, g);
-            instr.Execute(null, record);
+            ParseInstructionStoreConstant instr = new ParseInstructionStoreConstant(simpleType, guidField, guidField.FieldType, g);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.GetFieldValue<Guid>(guidField));
 
-            instr = ParseInstruction.StoreConstant(byteField, (byte)0xab);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, byteField, byteField.FieldType, (byte)0xab);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.GetFieldValue<byte>(byteField));
 
-            instr = ParseInstruction.StoreConstant(number16Field, (short)0x3b12);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, number16Field, number16Field.FieldType, (short)0x3b12);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.GetFieldValue<short>(number16Field));
 
-            instr = ParseInstruction.StoreConstant(number32Field, -1002003004);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, number32Field, number32Field.FieldType, -1002003004);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.GetFieldValue<int>(number32Field));
 
-            instr = ParseInstruction.StoreConstant(number64Field, 0xabcdef1234567);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, number64Field, number64Field.FieldType, 0xabcdef1234567);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.GetFieldValue<long>(number64Field));
 
-            instr = ParseInstruction.StoreConstant(stringField, "hi");
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, stringField, stringField.FieldType, "hi");
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.GetFieldValue<string>(stringField));
 
-            instr = ParseInstruction.StoreConstant(boolField, true);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, boolField, boolField.FieldType, true);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.GetFieldValue<bool>(boolField));
         }
 
@@ -470,32 +529,32 @@ namespace TraceEventTests
             SimpleRecord record = simpleType.CreateInstance<SimpleRecord>();
 
             Guid g = new Guid(0x12345678, 0x9876, 0x5432, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x1, 0x2);
-            ParseInstruction instr = ParseInstruction.StoreConstant(guidField, g);
-            instr.Execute(null, record);
+            ParseInstructionStoreConstant instr = new ParseInstructionStoreConstant(simpleType, guidField, guidField.FieldType, g);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.Guid);
 
-            instr = ParseInstruction.StoreConstant(byteField, (byte)0xab);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, byteField, byteField.FieldType, (byte)0xab);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.Byte);
 
-            instr = ParseInstruction.StoreConstant(number16Field, (short)0x3b12);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, number16Field, number16Field.FieldType, (short)0x3b12);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.Number16);
 
-            instr = ParseInstruction.StoreConstant(number32Field, -1002003004);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, number32Field, number32Field.FieldType, -1002003004);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.Number32);
 
-            instr = ParseInstruction.StoreConstant(number64Field, 0xabcdef1234567);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, number64Field, number64Field.FieldType, 0xabcdef1234567);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.Number64);
 
-            instr = ParseInstruction.StoreConstant(stringField, "hi");
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, stringField, stringField.FieldType, "hi");
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.String);
 
-            instr = ParseInstruction.StoreConstant(boolField, true);
-            instr.Execute(null, record);
+            instr = new ParseInstructionStoreConstant(simpleType, boolField, boolField.FieldType, true);
+            instr.Execute(null, null, ref record);
             Assert.Equal(instr.Constant, record.Bool);
         }
 
@@ -505,7 +564,7 @@ namespace TraceEventTests
         public void StoreReadInstruction()
         {
             SimpleRecord expectedRecord = GetSimpleRecord();
-            IStreamReader reader = GetSimpleTypeStreamReader(expectedRecord);
+            IStreamReader reader = GetSimpleTypeStreamReader(1, expectedRecord);
             RecordType simpleType = GetSimpleRecordType<SimpleRecord>();
             RecordField guidField = simpleType.GetField("Guid");
             RecordField byteField = simpleType.GetField("Byte");
@@ -516,32 +575,32 @@ namespace TraceEventTests
             RecordField boolField = simpleType.GetField("Bool");
             SimpleRecord record = simpleType.CreateInstance<SimpleRecord>();
 
-            ParseInstruction instr = ParseInstruction.StoreRead(guidField, ParseRule.Guid);
-            instr.Execute(reader, record);
+            ParseInstructionStoreRead instr = new ParseInstructionStoreRead(simpleType, guidField, ParseRule.Guid);
+            instr.Execute(reader, null, ref record);
             Assert.Equal(expectedRecord.Guid, record.Guid);
 
-            instr = ParseInstruction.StoreRead(byteField, ParseRule.FixedUInt8);
-            instr.Execute(reader, record);
+            instr = new ParseInstructionStoreRead(simpleType, byteField, ParseRule.FixedUInt8);
+            instr.Execute(reader, null, ref record);
             Assert.Equal(expectedRecord.Byte, record.Byte);
 
-            instr = ParseInstruction.StoreRead(number16Field, ParseRule.FixedInt16);
-            instr.Execute(reader, record);
+            instr = new ParseInstructionStoreRead(simpleType, number16Field, ParseRule.FixedInt16);
+            instr.Execute(reader, null, ref record);
             Assert.Equal(expectedRecord.Number16, record.Number16);
 
-            instr = ParseInstruction.StoreRead(number32Field, ParseRule.FixedInt32);
-            instr.Execute(reader, record);
+            instr = new ParseInstructionStoreRead(simpleType, number32Field, ParseRule.FixedInt32);
+            instr.Execute(reader, null, ref record);
             Assert.Equal(expectedRecord.Number32, record.Number32);
 
-            instr = ParseInstruction.StoreRead(number64Field, ParseRule.FixedInt64);
-            instr.Execute(reader, record);
+            instr = new ParseInstructionStoreRead(simpleType, number64Field, ParseRule.FixedInt64);
+            instr.Execute(reader, null, ref record);
             Assert.Equal(expectedRecord.Number64, record.Number64);
 
-            instr = ParseInstruction.StoreRead(stringField, ParseRule.UTF8String);
-            instr.Execute(reader, record);
+            instr = new ParseInstructionStoreRead(simpleType, stringField, ParseRule.UTF8String);
+            instr.Execute(reader, null, ref record);
             Assert.Equal(expectedRecord.String, record.String);
 
-            instr = ParseInstruction.StoreRead(boolField, ParseRule.Boolean);
-            instr.Execute(reader, record);
+            instr = new ParseInstructionStoreRead(simpleType, boolField, ParseRule.Boolean);
+            instr.Execute(reader, null, ref record);
             Assert.Equal(expectedRecord.Bool, record.Bool);
         }
 
@@ -555,12 +614,13 @@ namespace TraceEventTests
             RecordField simpleOneField = complexType.GetField("SimpleOne");
             RecordField simpleTwoField = complexType.GetField("SimpleTwo");
 
-            ParseInstruction instr = ParseInstruction.StoreField(simpleTwoField, new RecordField[] { simpleOneField });
-            instr.Execute(null, record);
+            ParseInstruction instr = new ParseInstructionStoreField(complexType, simpleTwoField, simpleOneField);
+            instr.Execute(null, null, ref record);
             Assert.Equal(record.SimpleOne, record.SimpleTwo);
             Assert.Equal(record.SimpleOne.Guid, record.SimpleTwo.Guid);
         }
 
+        /*
         [Fact]
         public void StoreFieldLookupInstruction()
         {
@@ -573,66 +633,73 @@ namespace TraceEventTests
             ComplexRecordA record = new ComplexRecordA();
             record.SimpleOne = new SimpleRecord();
             record.SimpleOne.Byte = 19;
-            RecordTable<SimpleRecord> table = new RecordTable<SimpleRecord>("Foo", number16Field);
+            RecordTable<SimpleRecord> table = new RecordTable<SimpleRecord>("Foo", simpleType, number16Field);
             SimpleRecord entry = GetSimpleRecord();
             entry.Number16 = 19;
             table.Add(entry);
 
-            ParseInstruction instr = ParseInstruction.StoreFieldLookup(simpleTwoField, new RecordField[] { simpleOneField, byteField }, table);
-            instr.Execute(null, record);
+            ParseInstruction instr = new ParseInstructionStoreFieldLookup(simpleTwoField, new RecordField[] { simpleOneField, byteField }, table);
+            instr.Execute(null, null, ref record);
             Assert.Equal(record.SimpleTwo, entry);
             Assert.Equal(record.SimpleTwo.Guid, entry.Guid);
-        }
+        }*/
 
-        class MySimpleRecordStream : RecordStream<SimpleRecord>
+        class MySimpleRecordStream : RecordTable<SimpleRecord>
         {
-            public MySimpleRecordStream() : base("SimpleRecords", RecordTypes.SimpleRecord) { }
-
+            public MySimpleRecordStream(bool copy = true) : base("SimpleRecords", RecordTypes.SimpleRecord)
+            {
+                this.copy = copy;
+            }
+            private bool copy;
             public List<SimpleRecord> Items = new List<SimpleRecord>();
 
-            public override void Add(SimpleRecord item)
+            public override SimpleRecord Add(SimpleRecord item)
             {
                 Items.Add(item);
+                if (copy)
+                    return (SimpleRecord)item.Clone<SimpleRecord>();
+                else
+                    return item;
             }
         }
 
         [Fact]
         public void PublishInstruction()
         {
-            MySimpleRecordStream stream = new MySimpleRecordStream();
+            MySimpleRecordStream stream = new MySimpleRecordStream(false);
             SimpleRecord record = new SimpleRecord();
-            ParseInstruction publishInstr = ParseInstruction.Publish(stream);
-            publishInstr.Execute(null, record);
+            ParseInstruction publishInstr = new ParseInstructionPublish(RecordTypes.SimpleRecord, stream);
+            publishInstr.Execute(null, null, ref record);
             Assert.Equal(record, stream.Items[0]);
 
 
-            RecordTable<SimpleRecord> table = new RecordTable<SimpleRecord>("Fooz!", RecordTypes.SimpleRecord.GetField("Byte"));
+            RecordTable<SimpleRecord> table = new RecordTable<SimpleRecord>("Fooz!", RecordTypes.SimpleRecord, RecordTypes.SimpleRecord.GetField("Byte"));
             SimpleRecord record2 = new SimpleRecord();
             record2.Byte = 198;
-            ParseInstruction publishInstr2 = ParseInstruction.Publish(table);
-            publishInstr2.Execute(null, record2);
+            ParseInstruction publishInstr2 = new ParseInstructionPublish(RecordTypes.SimpleRecord, table);
+            publishInstr2.Execute(null, null, ref record2);
             Assert.Equal(record2, table.Get(198));
         }
-
-
 
         [Fact]
         public void ParseRecordWithParseRule()
         {
             RecordType simpleRecordType = GetSimpleRecordType<SimpleRecord>();
-            ParseRule rule = new ParseRule(1000, simpleRecordType);
+            ParseRule rule = new ParseRule(1000, "SimpleRecord", simpleRecordType);
             rule.Instructions = new ParseInstruction[]
             {
-                ParseInstruction.StoreRead(simpleRecordType.GetField("Guid"), ParseRule.Guid),
-                ParseInstruction.StoreRead(simpleRecordType.GetField("Byte"), ParseRule.FixedUInt8),
-                ParseInstruction.StoreRead(simpleRecordType.GetField("Number16"), ParseRule.FixedInt16),
-                ParseInstruction.StoreRead(simpleRecordType.GetField("Number32"), ParseRule.FixedInt32),
-                ParseInstruction.StoreRead(simpleRecordType.GetField("Number64"), ParseRule.FixedInt64)
+                new ParseInstructionStoreRead(simpleRecordType, simpleRecordType.GetField("Guid"), ParseRule.Guid),
+                new ParseInstructionStoreRead(simpleRecordType, simpleRecordType.GetField("Byte"), ParseRule.FixedUInt8),
+                new ParseInstructionStoreRead(simpleRecordType, simpleRecordType.GetField("Number16"), ParseRule.FixedInt16),
+                new ParseInstructionStoreRead(simpleRecordType, simpleRecordType.GetField("Number32"), ParseRule.FixedInt32),
+                new ParseInstructionStoreRead(simpleRecordType, simpleRecordType.GetField("Number64"), ParseRule.FixedInt64),
+                new ParseInstructionStoreRead(simpleRecordType, simpleRecordType.GetField("String"), ParseRule.UTF8String),
+                new ParseInstructionStoreRead(simpleRecordType, simpleRecordType.GetField("Bool"), ParseRule.Boolean)
             };
             SimpleRecord record = new SimpleRecord();
             SimpleRecord expectedRecord = GetSimpleRecord();
-            IStreamReader reader = GetSimpleTypeStreamReader(expectedRecord);
-            rule.Parse(reader, record);
+            IStreamReader reader = GetSimpleTypeStreamReader(1, expectedRecord);
+            record = rule.Parse(reader, record);
 
             Assert.Equal(record.Guid, expectedRecord.Guid);
             Assert.Equal(record.Byte, expectedRecord.Byte);
@@ -642,10 +709,94 @@ namespace TraceEventTests
         }
 
         [Fact]
+        public void ParseVariableSizedRecord()
+        {
+            RecordType variableSizeRecordType = RecordTypes.VariableSizeRecord;
+            ParseRule rule = new ParseRule(1000, "VariableSizedRecord", variableSizeRecordType);
+            rule.Instructions = new ParseInstruction[]
+            {
+                new ParseInstructionStoreRead(variableSizeRecordType, variableSizeRecordType.GetField("Size"), ParseRule.FixedInt32),
+                new ParseInstructionStoreRead(variableSizeRecordType, variableSizeRecordType.GetField("Byte"), ParseRule.FixedUInt8),
+                new ParseInstructionStoreField(variableSizeRecordType, RecordType.ParseRuleLocalVars.GetField("CurrentOffset"),
+                                               variableSizeRecordType.GetField("Size"))
+            };
+            MemoryStream stream = new MemoryStream();
+            BinaryWriter writer = new BinaryWriter(stream);
+            for (int i = 0; i < 3; i++)
+            {
+                writer.Write(100);
+                writer.Write((byte)214);
+                for (int j = 5; j < 100; j++)
+                {
+                    writer.Write((byte)j);
+                }
+            }
+            stream.Position = 0;
+            IStreamReader reader = new MemoryStreamReader(stream.ToArray());
+            StreamLabel startLabel = reader.Current;
+            VariableSizeRecord v = new VariableSizeRecord();
+
+            rule.Parse(reader, v);
+            Assert.Equal(100, reader.Current.Sub(startLabel));
+            Assert.Equal(100, v.Size);
+            Assert.Equal(214, v.Byte);
+
+            rule.Parse(reader, v);
+            Assert.Equal(200, reader.Current.Sub(startLabel));
+            Assert.Equal(100, v.Size);
+            Assert.Equal(214, v.Byte);
+
+            rule.Parse(reader, v);
+            Assert.Equal(300, reader.Current.Sub(startLabel));
+            Assert.Equal(100, v.Size);
+            Assert.Equal(214, v.Byte);
+
+        }
+
+        [Fact]
+        public void IterateInstruction()
+        {
+            MySimpleRecordStream stream = new MySimpleRecordStream();
+            ParseRule rule = new ParseRule(1000, "SimpleRecord", RecordTypes.SimpleRecord);
+            rule.Instructions = new ParseInstruction[]
+            {
+                new ParseInstructionStoreRead(RecordTypes.SimpleRecord, RecordTypes.SimpleRecord.GetField("Guid"), ParseRule.Guid),
+                new ParseInstructionStoreRead(RecordTypes.SimpleRecord, RecordTypes.SimpleRecord.GetField("Byte"), ParseRule.FixedUInt8),
+                new ParseInstructionStoreRead(RecordTypes.SimpleRecord, RecordTypes.SimpleRecord.GetField("Number16"), ParseRule.FixedInt16),
+                new ParseInstructionStoreRead(RecordTypes.SimpleRecord, RecordTypes.SimpleRecord.GetField("Number32"), ParseRule.FixedInt32),
+                new ParseInstructionStoreRead(RecordTypes.SimpleRecord, RecordTypes.SimpleRecord.GetField("Number64"), ParseRule.FixedInt64),
+                new ParseInstructionStoreRead(RecordTypes.SimpleRecord, RecordTypes.SimpleRecord.GetField("String"), ParseRule.UTF8String),
+                new ParseInstructionStoreRead(RecordTypes.SimpleRecord, RecordTypes.SimpleRecord.GetField("Bool"), ParseRule.Boolean),
+                new ParseInstructionPublish(RecordTypes.SimpleRecord, stream)
+            };
+
+            SimpleRecordBlockHeader header = new SimpleRecordBlockHeader();
+            header.EntryCount = 10;
+            ParseInstruction iterateInstr = new ParseInstructionIterateRead(RecordTypes.SimpleRecordBlockHeader, 
+                rule, RecordTypes.SimpleRecordBlockHeader.GetField("EntryCount"));
+
+            SimpleRecord expectedRecord = GetSimpleRecord();
+            IStreamReader reader = GetSimpleTypeStreamReader(10, expectedRecord);
+            iterateInstr.Execute(reader, null, ref header);
+
+            Assert.Equal(10, stream.Items.Count);
+            for(int i = 0; i < 10; i++)
+            {
+                Assert.Equal(expectedRecord.Guid, stream.Items[i].Guid);
+                Assert.Equal(expectedRecord.Byte, stream.Items[i].Byte);
+                Assert.Equal(expectedRecord.Number16, stream.Items[i].Number16);
+                Assert.Equal(expectedRecord.Number32, stream.Items[i].Number32);
+                Assert.Equal(expectedRecord.Number64 + i, stream.Items[i].Number64);
+                Assert.Equal(expectedRecord.String, stream.Items[i].String);
+                Assert.Equal(expectedRecord.Bool, stream.Items[i].Bool);
+            }
+        }
+
+        [Fact]
         void RecordTableLookup()
         {
             RecordType simpleRecordType = GetSimpleRecordType<SimpleRecord>();
-            RecordTable<SimpleRecord> table = new RecordTable<SimpleRecord>("foo", simpleRecordType.GetField("Number16"));
+            RecordTable<SimpleRecord> table = new RecordTable<SimpleRecord>("foo", simpleRecordType, simpleRecordType.GetField("Number16"));
 
             SimpleRecord record = new SimpleRecord();
             record.Number16 = 12;
@@ -656,34 +807,39 @@ namespace TraceEventTests
         [Fact]
         void ReadWriteWellKnownTypes()
         {
+            RecordParserContext context = new RecordParserContext();
             MemoryStream ms = new MemoryStream();
             BinaryWriter writer = new BinaryWriter(ms);
-            RecordWriter.Write(writer, RecordType.Boolean);
-            RecordWriter.Write(writer, RecordType.UInt8);
-            RecordWriter.Write(writer, RecordType.Type.GetField("Name"));
-            RecordWriter.Write(writer, RecordType.Type.GetField("Id"));
+            RecordType foo = new RecordType(1000, "foo", typeof(Record));
+            RecordType bar = new RecordType(1001, "bar", typeof(Record));
+            RecordField a = new RecordField(1000, "a", foo, RecordType.Int32);
+            RecordField b = new RecordField(1001, "b", bar, RecordType.String);
+            RecordWriter.Write(writer, foo);
+            RecordWriter.Write(writer, bar);
+            RecordWriter.Write(writer, a);
+            RecordWriter.Write(writer, b);
             ms.Position = 0;
 
             IStreamReader reader = new PinnedStreamReader(ms);
-            RecordType booleanType = new RecordType();
-            ParseRule.Type.Parse(reader, booleanType);
-            Assert.Equal(RecordType.Boolean.Name, booleanType.Name);
-            Assert.Equal(RecordType.Boolean.Id, booleanType.Id);
+            RecordType fooType = new RecordType();
+            fooType = context.ParseRules.Type.Parse(reader, fooType);
+            Assert.Equal(foo.Name, fooType.Name);
+            Assert.Equal(foo.Id, fooType.Id);
 
-            RecordType byteType = new RecordType();
-            ParseRule.Type.Parse(reader, byteType);
-            Assert.Equal(RecordType.UInt8.Name, byteType.Name);
-            Assert.Equal(RecordType.UInt8.Id, byteType.Id);
+            RecordType barType = new RecordType();
+            barType = context.ParseRules.Type.Parse(reader, barType);
+            Assert.Equal(bar.Name, barType.Name);
+            Assert.Equal(bar.Id, barType.Id);
 
-            RecordField nameField = new RecordField();
-            ParseRule.Field.Parse(reader, nameField);
-            Assert.Equal(RecordType.Type.GetField("Name").Name, nameField.Name);
-            Assert.Equal(RecordType.Type.GetField("Name").Id, nameField.Id);
+            RecordField aField = new RecordField();
+            aField = context.ParseRules.Field.Parse(reader, aField);
+            Assert.Equal(a.Name, aField.Name);
+            Assert.Equal(a.Id, aField.Id);
 
-            RecordField idField = new RecordField();
-            ParseRule.Field.Parse(reader, idField);
-            Assert.Equal(RecordType.Type.GetField("Id").Name, idField.Name);
-            Assert.Equal(RecordType.Type.GetField("Id").Id, idField.Id);
+            RecordField bField = new RecordField();
+            bField = context.ParseRules.Field.Parse(reader, bField);
+            Assert.Equal(b.Name, bField.Name);
+            Assert.Equal(b.Id, bField.Id);
         }
 
         [Fact]
@@ -691,30 +847,21 @@ namespace TraceEventTests
         {
             RecordParserContext context = new RecordParserContext();
             Assert.Equal(RecordType.Boolean, context.Types.Get("Boolean"));
-            Assert.Equal(RecordType.Boolean, context.Types.Get((int)TypeCode.Boolean));
             Assert.Equal(RecordType.UInt8, context.Types.Get("UInt8"));
-            Assert.Equal(RecordType.UInt8, context.Types.Get((int)TypeCode.Byte));
             Assert.Equal(RecordType.Int16, context.Types.Get("Int16"));
-            Assert.Equal(RecordType.Int16, context.Types.Get((int)TypeCode.Int16));
             Assert.Equal(RecordType.Int32, context.Types.Get("Int32"));
-            Assert.Equal(RecordType.Int32, context.Types.Get((int)TypeCode.Int32));
             Assert.Equal(RecordType.Int64, context.Types.Get("Int64"));
-            Assert.Equal(RecordType.Int64, context.Types.Get((int)TypeCode.Int64));
             Assert.Equal(RecordType.String, context.Types.Get("String"));
-            Assert.Equal(RecordType.String, context.Types.Get((int)TypeCode.String));
             Assert.Equal(RecordType.Guid, context.Types.Get("Guid"));
-            Assert.Equal(RecordType.Guid, context.Types.Get(19));
             Assert.Equal(RecordType.Type, context.Types.Get("Type"));
-            Assert.Equal(RecordType.Type, context.Types.Get(100));
             Assert.Equal(RecordType.Field, context.Types.Get("Field"));
-            Assert.Equal(RecordType.Field, context.Types.Get(101));
 
-            Assert.Equal(RecordField.TypeName, context.Fields.Get(1));
-            Assert.Equal(RecordField.TypeId, context.Fields.Get(2));
-            Assert.Equal(RecordField.FieldName, context.Fields.Get(3));
-            Assert.Equal(RecordField.FieldId, context.Fields.Get(4));
-            Assert.Equal(RecordField.FieldContainingType, context.Fields.Get(5));
-            Assert.Equal(RecordField.FieldFieldType, context.Fields.Get(6));
+            Assert.Equal("Name", context.Fields.Get(1).Name);
+            Assert.Equal("Id", context.Fields.Get(2).Name);
+            Assert.Equal("Name", context.Fields.Get(3).Name);
+            Assert.Equal("Id", context.Fields.Get(4).Name);
+            Assert.Equal("ContainingType", context.Fields.Get(5).Name);
+            Assert.Equal("FieldType", context.Fields.Get(6).Name);
         }
 
         
@@ -722,9 +869,9 @@ namespace TraceEventTests
         {
             MemoryStream stream = new MemoryStream();
             BinaryWriter writer = new BinaryWriter(stream);
-            RecordWriter.Write(writer, new RecordType(1000, "Foo", null));
-            RecordWriter.Write(writer, new RecordType(1001, "Bar", null));
-            RecordWriter.Write(writer, new RecordType(1002, "Baz", null));
+            RecordWriter.Write(writer, new RecordType(1000, "Foo", typeof(Record)));
+            RecordWriter.Write(writer, new RecordType(1001, "Bar", typeof(Record)));
+            RecordWriter.Write(writer, new RecordType(1002, "Baz", typeof(Record)));
             stream.Position = 0;
             return new MemoryStreamReader(stream.ToArray());
         }
@@ -734,27 +881,98 @@ namespace TraceEventTests
         {
             RecordParserContext context = new RecordParserContext();
             IStreamReader reader = GetStreamOfTypes();
-            RecordType record1 = context.Parse<RecordType>(reader, ParseRule.Type);
+            RecordType record1 = context.Parse<RecordType>(reader, context.ParseRules.Type);
             Assert.Equal("Foo", record1.Name);
             Assert.Equal(1000, record1.Id);
-            RecordType record2 = context.Parse<RecordType>(reader, ParseRule.Type);
+            RecordType record2 = context.Parse<RecordType>(reader, context.ParseRules.Type);
             Assert.Equal("Bar", record2.Name);
             Assert.Equal(1001, record2.Id);
-            RecordType record3 = context.Parse<RecordType>(reader, ParseRule.Type);
+            RecordType record3 = context.Parse<RecordType>(reader, context.ParseRules.Type);
             Assert.Equal("Baz", record3.Name);
             Assert.Equal(1002, record3.Id);
         }
 
         [Fact]
-        void TypeBinding()
+        void TypeBindingByName()
         {
             RecordParserContext context = new RecordParserContext();
             RecordType fooType = context.Types.GetOrCreate("Foo");
+            RecordType barType = context.Types.GetOrCreate("Bar");
+            RecordType bazType = context.Types.GetOrCreate("Baz");
             IStreamReader reader = GetStreamOfTypes();
-            RecordType record1 = context.Parse<RecordType>(reader, ParseRule.Type);
+
+            RecordType record1 = context.Parse<RecordType>(reader, context.ParseRules.Type);
             Assert.Equal(record1, fooType);
             Assert.Equal("Foo", fooType.Name);
             Assert.Equal(1000, fooType.Id);
+
+            RecordType record2 = context.Parse<RecordType>(reader, context.ParseRules.Type);
+            Assert.Equal(record2, barType);
+            Assert.Equal("Bar", barType.Name);
+            Assert.Equal(1001, barType.Id);
+
+            RecordType record3 = context.Parse<RecordType>(reader, context.ParseRules.Type);
+            Assert.Equal(record3, bazType);
+            Assert.Equal("Baz", bazType.Name);
+            Assert.Equal(1002, bazType.Id);
         }
+
+        [Fact]
+        void TypeBindingByType()
+        {
+            RecordParserContext context = new RecordParserContext();
+            RecordType fooType = context.Types.GetOrCreate(new RecordType(0, "Foo", typeof(SimpleRecord)));
+            RecordType barType = context.Types.GetOrCreate(new RecordType(0, "Bar", typeof(SimpleRecord)));
+            RecordType bazType = context.Types.GetOrCreate(new RecordType(0, "Baz", typeof(SimpleRecord)));
+            IStreamReader reader = GetStreamOfTypes();
+
+            RecordType record1 = context.Parse<RecordType>(reader, context.ParseRules.Type);
+            Assert.Equal(record1, fooType);
+            Assert.Equal("Foo", fooType.Name);
+            Assert.Equal(1000, fooType.Id);
+            Assert.Equal(typeof(SimpleRecord), fooType.ReflectionType);
+
+            RecordType record2 = context.Parse<RecordType>(reader, context.ParseRules.Type);
+            Assert.Equal(record2, barType);
+            Assert.Equal("Bar", barType.Name);
+            Assert.Equal(1001, barType.Id);
+            Assert.Equal(typeof(SimpleRecord), barType.ReflectionType);
+
+            RecordType record3 = context.Parse<RecordType>(reader, context.ParseRules.Type);
+            Assert.Equal(record3, bazType);
+            Assert.Equal("Baz", bazType.Name);
+            Assert.Equal(1002, bazType.Id);
+            Assert.Equal(typeof(SimpleRecord), bazType.ReflectionType);
+        }
+
+        
+        [Fact]
+        void SerializeInstructions()
+        {
+            RecordParserContext context = new RecordParserContext();
+            List<ParseInstruction> instructions = new List<ParseInstruction>();
+            foreach (ParseRule rule in context.ParseRules.Values)
+            {
+                foreach(ParseInstruction instruction in rule.Instructions)
+                {
+                    instructions.Add(instruction);
+                }
+            }
+
+            MemoryStream ms = new MemoryStream();
+            BinaryWriter writer = new BinaryWriter(ms);
+            foreach (ParseInstruction instruction in instructions)
+            {
+                writer.WriteInstruction(instruction, context.ParseRules);
+            }
+            ms.Position = 0;
+            MemoryStreamReader reader = new MemoryStreamReader(ms.ToArray());
+
+            for(int i = 0; i < instructions.Count; i++)
+            {
+                var instr = context.Parse<ParseInstruction>(reader, context.ParseRules.ParseInstruction);
+            }
+        }
+        
     }
 }
