@@ -10,6 +10,16 @@ using System.Text;
 
 namespace Microsoft.Diagnostics.Tracing.EventPipe
 {
+    [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
+    internal class RecordFieldAttribute : Attribute {}
+
+    [AttributeUsage(AttributeTargets.Class)]
+    internal class RecordAttribute : Attribute
+    {
+        public RecordAttribute(string name) { Name = name; }
+        public string Name { get; }
+    }
+
     internal class DynamicFieldInfo
     {
         public Type CanonFieldSlotType;
@@ -17,83 +27,10 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public int FieldCount;
     }
 
-    internal class RecordType : Record
+    [Record("Type")]
+    internal class RecordType : BindableRecord
     {
-        public static RecordType Object = new RecordType(1, "Object", typeof(object));
-        // Well-known primitive types
-        public static RecordType Boolean = new RecordType(2, "Boolean", typeof(bool));
-        public static RecordType UInt8 = new RecordType(3, "UInt8", typeof(byte));
-        public static RecordType Int16 = new RecordType(4, "Int16", typeof(short));
-        public static RecordType Int32 = new RecordType(5, "Int32", typeof(int));
-        public static RecordType Int64 = new RecordType(6, "Int64", typeof(long));
-        public static RecordType String = new RecordType(7, "String", typeof(string));
-        public static RecordType Guid = new RecordType(8, "Guid", typeof(Guid));
-        // Well-known record types
-        public static RecordType Type;
-        public static RecordType Field;
-        public static RecordType Table;
-        public static RecordType ParseRule;
-        public static RecordType ParseRuleLocalVars;
-        public static RecordType RecordBlock;
-        public static RecordType ParseInstruction;
-        public static RecordType ParseInstructionArray;
-
-        public static RecordType[] WellKnownTypes;
-
-        static RecordType()
-        {
-            Type = new RecordType(100, "Type", typeof(RecordType));
-            Field = new RecordType(101, "Field", typeof(RecordField));
-            Table = new RecordType(102, "Table", typeof(RecordTable));
-            ParseRule = new RecordType(103, "ParseRule", typeof(ParseRule));
-            ParseRuleLocalVars = new RecordType(104, "ParseRuleLocalVars", typeof(ParseRuleLocalVars));
-            RecordBlock = new RecordType(105, "RecordBlock", typeof(RecordBlock));
-            ParseInstruction = new RecordType(106, "ParseInstruction", typeof(ParseInstruction));
-            Type.AddField(new RecordField(1, "Name", Type, String));
-            Type.AddField(new RecordField(2, "Id", Type, Int32));
-            Type.FinishInit();
-            Field.AddField(new RecordField(3, "Name", Field, String));
-            Field.AddField(new RecordField(4, "Id", Field, Int32));
-            Field.AddField(new RecordField(5, "ContainingType", Field, Type));
-            Field.AddField(new RecordField(6, "FieldType", Field, Type));
-            Field.FinishInit();
-            Table.AddField(new RecordField(10, "Name", Table, String));
-            Table.AddField(new RecordField(11, "Id", Table, Int32));
-            Table.AddField(new RecordField(12, "ItemType", Table, Type));
-            Table.AddField(new RecordField(13, "PrimaryKeyField", Table, Field));
-            Table.FinishInit();
-            ParseRule.AddField(new RecordField(14, "Id", ParseRule, Int32));
-            ParseRule.AddField(new RecordField(15, "ParsedType", ParseRule, Type));
-            //ParseInstruction[] Instructions
-            ParseRule.FinishInit();
-            ParseRuleLocalVars.AddField(new RecordField(16, "TempInt32", ParseRuleLocalVars, Int32));
-            ParseRuleLocalVars.AddField(new RecordField(99000, "TempParseRule", ParseRuleLocalVars, ParseRule));
-            ParseRuleLocalVars.AddField(new RecordField(99001, "This", ParseRuleLocalVars, null));
-            ParseRuleLocalVars.AddField(new RecordField(99002, "Null", ParseRuleLocalVars, null));
-            ParseRuleLocalVars.AddField(new RecordField(17, "CurrentOffset", ParseRuleLocalVars, Int32));
-            ParseRuleLocalVars.FinishInit();
-            RecordBlock.AddField(new RecordField(18, "EntryCount", RecordBlock, Int32));
-            RecordBlock.FinishInit();
-            ParseInstruction.AddField(new RecordField(19, "InstructionType", ParseInstruction, UInt8));
-            ParseInstruction.AddField(new RecordField(20, "DestinationField", ParseInstruction, Field));
-            ParseInstruction.AddField(new RecordField(21, "Constant", ParseInstruction, Object));
-            ParseInstruction.AddField(new RecordField(8899, "ConstantType", ParseInstruction, Type));
-            ParseInstruction.AddField(new RecordField(22, "ParseRule", ParseInstruction, ParseRule));
-            ParseInstruction.AddField(new RecordField(8887, "ParsedType", ParseInstruction, Type));
-            ParseInstruction.AddField(new RecordField(8888, "ParseRuleField", ParseInstruction, Field));
-            ParseInstruction.AddField(new RecordField(23, "CountField", ParseInstruction, Field));
-            ParseInstruction.AddField(new RecordField(24, "SourceField", ParseInstruction, Field));
-            ParseInstruction.AddField(new RecordField(25, "LookupTable", ParseInstruction, Table));
-            ParseInstruction.AddField(new RecordField(26, "PublishStream", ParseInstruction, Table));
-            ParseInstruction.FinishInit();
-
-            WellKnownTypes = new RecordType[] { Object, Boolean, UInt8, Int16, Int32, Int64, Guid, String,
-                Type, Field, Table, ParseRule, ParseRuleLocalVars, RecordBlock, ParseInstruction};
-        }
-
-        public int Id;
-        public string Name;
-        public RecordType ArrayElement;
+        [RecordField] public RecordType ArrayElement;
         public Type ReflectionType;
         public int CountWeakFieldTypes;
         public Dictionary<int, DynamicFieldInfo> WeakFieldTypesByIndex = new Dictionary<int, DynamicFieldInfo>();
@@ -101,6 +38,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         List<RecordField> _fields = new List<RecordField>();
         Delegate _initRecord;   // Action<T> where T = ReflectionType
         Delegate _createRecord; // Func<T> where T = ReflectionType
+        Delegate _copyRecord; // Action<T,T> where T = ReflectionType
 
         public RecordType() { }
 
@@ -136,14 +74,17 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             {
                 _initRecord = RecordParserCodeGen.GetInitRecordDelegate(this);
                 _createRecord = RecordParserCodeGen.GetCreateInstanceDelegate(this);
+                _copyRecord = RecordParserCodeGen.GetCopyDelegate(this);
             }
         }
 
         public Delegate GetCreateInstanceDelegate()   { FinishInit(); return _createRecord; }
         public Delegate GetInitInstanceDelegate()     { FinishInit(); return _initRecord; }
+        public Delegate GetCopyDelegate()             { FinishInit(); return _copyRecord; }
         public RecordField[] GetFields()              { return _fields.ToArray(); }
         public void InitInstance<T>(T record)         { ((Action<T>)GetInitInstanceDelegate())(record); }
         public T CreateInstance<T>()                  { return ((Func<T>)GetCreateInstanceDelegate())(); }
+        public void Copy<T>(T source, T dest)         { ((Action<T,T>)GetCopyDelegate())(source, dest); }
         public RecordField GetField(string fieldName) { return _fields.Where(f => f.Name == fieldName).FirstOrDefault(); }
 
         public void AddField(RecordField field)
@@ -174,14 +115,11 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         }
     }
 
-    internal class RecordField : Record
+    [Record("Field")]
+    internal class RecordField : BindableRecord
     {
-        public int Id;
-        public string Name;
-        public RecordType ContainingType;
-        public RecordType FieldType;
-        public bool RequiresStorage;
-
+        [RecordField] public RecordType ContainingType;
+        [RecordField] public RecordType FieldType;
         public int DynamicFieldTypeIndex;
         public int DynamicFieldIndex;
 
@@ -194,9 +132,16 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             FieldType = fieldType;
         }
 
+        public override object GetBindingKey()
+        {
+            if (string.IsNullOrEmpty(Name)) throw new SerializationException("Name must be non-empty");
+            if (ContainingType == null)     throw new SerializationException("ContainingType must be non-empty");
+            return Tuple.Create(Name,ContainingType);
+        }
+
         public override string ToString()
         {
-            return ContainingType.Name + "." + Name + "(" + Id + ")";
+            return ContainingType?.Name + "." + Name + "(" + Id + ")";
         }
     }
 
@@ -218,18 +163,18 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
     internal class ParseInstruction : Record
     {
-        public ParseInstructionType InstructionType { get; protected set; }
-        public RecordField DestinationField { get; protected set; }
-        public object Constant { get; protected set; }
-        public RecordType ConstantType { get { return ParsedType; } protected set { ParsedType = value; } }
-        public ParseRule ParseRule { get; protected set; }
-        public RecordType ParsedType { get; protected set; }
-        public RecordField ParseRuleField { get; protected set; }
-        public RecordField CountField { get; protected set; }
-        public RecordField SourceField { get; protected set; }
-        public RecordTable LookupTable { get; protected set; }
-        public RecordTable PublishStream { get; protected set; }
-        public RecordType ThisType { get; set; }
+        [RecordField] public ParseInstructionType InstructionType { get; protected set; }
+        [RecordField] public RecordField DestinationField { get; protected set; }
+        [RecordField] public object Constant { get; protected set; }
+        [RecordField] public RecordType ConstantType { get { return ParsedType; } protected set { ParsedType = value; } }
+        [RecordField] public ParseRule ParseRule { get; protected set; }
+        [RecordField] public RecordType ParsedType { get; protected set; }
+        [RecordField] public RecordField ParseRuleField { get; protected set; }
+        [RecordField] public RecordField CountField { get; protected set; }
+        [RecordField] public RecordField SourceField { get; protected set; }
+        [RecordField] public RecordTable LookupTable { get; protected set; }
+        [RecordField] public RecordTable PublishStream { get; protected set; }
+        [RecordField] public RecordType ThisType { get; set; }
 
         private Delegate _cachedExecuteAction; // InstructionAction<T> where T = ThisType.ReflectionType
 
@@ -341,14 +286,23 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
     {
         public static Delegate GetCreateInstanceDelegate(RecordType recordType)
         {
+            Type delegateType = typeof(Func<>).MakeGenericType(recordType.ReflectionType);
+            return Expression.Lambda(delegateType, GetCreateAndInitExpression(recordType)).Compile();
+        }
+
+        static Expression GetCreateAndInitExpression(RecordType recordType)
+        {
+            if(!typeof(Record).IsAssignableFrom(recordType.ReflectionType))
+            {
+                return Expression.Default(recordType.ReflectionType);
+            }
             Expression createExpression = Expression.New(recordType.ReflectionType);
             ParameterExpression recordVar = Expression.Variable(recordType.ReflectionType);
             List<Expression> statements = new List<Expression>();
             statements.Add(Expression.Assign(recordVar, createExpression));
             statements.AddRange(GetInitRecordStatements(recordVar, recordType));
             statements.Add(recordVar);
-            Type delegateType = typeof(Func<>).MakeGenericType(recordType.ReflectionType);
-            return Expression.Lambda(delegateType, Expression.Block(new ParameterExpression[] { recordVar }, statements)).Compile();
+            return Expression.Block(new ParameterExpression[] { recordVar }, statements);
         }
 
         public static Delegate GetInitRecordDelegate(RecordType recordType)
@@ -379,30 +333,9 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             }
         }
 
-        public static InstructionAction<T> GetStoreFieldDelegate<T>(ParameterExpression localsParam, RecordType recordType, ParameterExpression recordParam, RecordField field, RecordType fieldValType, Expression fieldVal)
-        {
-            RecordType fieldRootType = recordType;
-            Expression fieldRoot = recordParam;
-            //TODO: what if the record is also an instance of LocalVarsType?
-            if(field.ContainingType.ReflectionType == localsParam.Type)
-            {
-                //TODO: get rid of this static access
-                fieldRootType = RecordType.ParseRuleLocalVars;
-                fieldRoot = localsParam;
-            }
-            else if (field.ContainingType.ReflectionType != recordParam.Type)
-            {
-                fieldRootType = field.ContainingType;
-                fieldRoot = Expression.Convert(recordParam, field.ContainingType.ReflectionType);
-            }
-            Expression body = GetStoreFieldExpression(fieldRootType, recordType, fieldRoot, recordParam, field, fieldValType, fieldVal);
-            return Expression.Lambda<InstructionAction<T>>(body, StreamReaderParameter, localsParam, recordParam).Compile();
-        }
-
         public static Func<T,U> GetRecordFieldDelegate<T,U>(RecordType recordType, RecordField field)
         {
             Debug.Assert(typeof(T) == recordType.ReflectionType);
-            Debug.Assert(typeof(U) == field.FieldType.ReflectionType);
             ParameterExpression record = Expression.Parameter(typeof(T), "record");
             Expression body = GetFieldReadExpression(recordType, null, record, field);
             if(body.Type != typeof(U))
@@ -412,6 +345,23 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return Expression.Lambda<Func<T,U>>(body, record).Compile();
         }
 
+        public static Func<IStreamReader,object> GetParseDelegate(ParseRule parseRule)
+        {
+            Expression localVars = GetNewFrameLocalVars();
+            Expression initialThis = GetCreateAndInitExpression(parseRule.ParsedType);
+            Expression body = GetParseRuleExpression(parseRule, localVars, initialThis);
+            if(body.Type != typeof(object))
+            {
+                body = Expression.Convert(body, typeof(object));
+            }
+            return Expression.Lambda<Func<IStreamReader,object>>(body, StreamReaderParameter).Compile();
+        }
+
+        static Expression GetNewFrameLocalVars()
+        {
+            return Expression.New(typeof(ParseRuleLocalVars));
+        }
+
         public static Expression GetPublishExpression(Expression record, RecordTable stream)
         {
             Expression streamItem = record;
@@ -419,7 +369,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             {
                 streamItem = Expression.Convert(record, stream.ItemType.ReflectionType);
             }
-            MethodInfo addMethod = stream.GetType().GetMethod("Add");
+            MethodInfo addMethod = stream.GetType().GetMethod("OnPublish", BindingFlags.FlattenHierarchy | BindingFlags.NonPublic | BindingFlags.Instance);
             Expression addResult = Expression.Call(Expression.Constant(stream), addMethod, streamItem);
             if(record.Type != addResult.Type)
             {
@@ -440,19 +390,43 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             ParameterExpression indexVar = Expression.Variable(typeof(int), "index");
             Expression initIndexVar = Expression.Assign(indexVar, Expression.Constant(0));
             LabelTarget exitLoop = Expression.Label();
+            //TODO: need strong type constructor
             Expression initRecordVal = Expression.Constant(rule.ParsedType.CreateInstance<Record>());
             ParameterExpression recordVar = Expression.Variable(rule.ParsedType.ReflectionType);
             Expression initRecordVar = Expression.Assign(recordVar, initRecordVal);
+            Expression childLocals = GetNewFrameLocalVars();
+            List<Expression> loopBodyStatements = new List<Expression>();
             Expression loop = Expression.Loop(
                 Expression.IfThenElse(
                     Expression.LessThan(indexVar, countVar),
                     Expression.Block(
-                        Expression.Assign(recordVar, GetParseExpression(rule, recordVar)),
+                        Expression.Assign(recordVar, GetParseExpression(rule, childLocals, recordVar)),
                         Expression.Assign(indexVar, Expression.Increment(indexVar))),
                     Expression.Break(exitLoop)),
                 exitLoop);
             return Expression.Block(new ParameterExpression[] { countVar, indexVar, recordVar },
                 initCountVar, initIndexVar, initRecordVar, loop);
+        }
+
+        public static Delegate GetCopyDelegate(RecordType objType)
+        {
+            ParameterExpression source = Expression.Parameter(objType.ReflectionType, "source");
+            ParameterExpression dest = Expression.Parameter(objType.ReflectionType, "dest");
+            Type delegateType = typeof(Action<,>).MakeGenericType(objType.ReflectionType, objType.ReflectionType);
+            return Expression.Lambda(delegateType, GetCopyExpression(objType, source, dest), source, dest).Compile();
+        }
+
+        static Expression GetCopyExpression(RecordType objType, Expression sourceObj, Expression destObj)
+        {
+            if (objType.GetFields().Any())
+            {
+                return Expression.Block(objType.GetFields().Select(f =>
+                    GetStoreFieldExpression(objType, objType, destObj, destObj, f, f.FieldType, GetFieldReadExpression(objType, null, sourceObj, f))));
+            }
+            else
+            {
+                return destObj;
+            }
         }
 
         public static Delegate GetInstructionExecuteDelegate(ParseInstruction instruction)
@@ -478,8 +452,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                     //replacing records with different sub-types during publish could have similar effect - nah that is OK, parsedType would refer to the base type that was
                     //originally parsed which would match
                     //
-                    // If this conversion isn't a no-op we didn't want to provide the previous val
-                    Expression previousFieldVal = Expression.Default(parsedType.ReflectionType);
+                    Expression previousFieldVal = null;
                     RecordType thisType = instruction.ThisType;
                     RecordType resolvedFieldType = ResolveFieldType(thisType, instruction.DestinationField);
                     if (resolvedFieldType == parsedType)
@@ -495,19 +468,17 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                     if (instruction.ParseRuleField != null)
                     {
                         return GetInstructionStoreExpression(recordParam, instruction, instruction.ParsedType,
-                            GetParseExpression(instruction.ThisType, recordParam, instruction.ParsedType, instruction.ParseRuleField, previousFieldVal));
+                            GetReadRuleAndParseExpression(instruction.ThisType, recordParam, instruction.ParsedType, instruction.ParseRuleField, previousFieldVal));
                     }
                     else
                     {
                         return GetInstructionStoreExpression(recordParam, instruction, instruction.ParseRule.ParsedType,
-                            // not a no-op for example parse int and store into long field
-                            GetParseExpression(instruction.ParseRule, previousFieldVal));
+                            GetParseExpression(instruction.ParseRule, null, previousFieldVal));
                     }
                 case ParseInstructionType.StoreReadLookup:
                     return GetInstructionStoreExpression(recordParam, instruction, instruction.LookupTable.ItemType,
                         GetReadLookupExpression(instruction.ParseRule, instruction.LookupTable));
                 case ParseInstructionType.StoreField:
-                    // not a no-op
                     return GetInstructionStoreExpression(recordParam, instruction, instruction.SourceField.FieldType, GetFieldReadExpression(
                         instruction.ThisType, LocalVarsParameter, recordParam, instruction.SourceField));
                 case ParseInstructionType.StoreFieldLookup:
@@ -528,8 +499,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             Expression fieldRoot = recordParam;
             if (instruction.DestinationField.ContainingType.ReflectionType == LocalVarsParameter.Type)
             {
-                //TODO: don't hardcode static type
-                fieldRootType = RecordType.ParseRuleLocalVars;
+                fieldRootType = instruction.DestinationField.ContainingType;
                 fieldRoot = LocalVarsParameter;
             }
             return GetStoreFieldExpression(fieldRootType, instruction.ThisType, fieldRoot, recordParam, instruction.DestinationField, storeValType, storeVal);
@@ -541,8 +511,6 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             Expression fieldRoot = thisObj;
             if(localVars != null && fieldRootType.ReflectionType == localVars.Type)
             {
-                //TODO: don't hardcode the static
-                fieldRootType = RecordType.ParseRuleLocalVars;
                 fieldRoot = localVars;
             }
             else if (fieldRootType.ReflectionType != thisObj.Type)
@@ -574,7 +542,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
         public static Expression GetReadLookupExpression(ParseRule rule, RecordTable table)
         {
-            Expression fieldRead = GetParseExpression(rule, Expression.Default(rule.ParsedType.ReflectionType));
+            Expression fieldRead = GetParseExpression(rule);
             return GetLookupExpression(table, rule.ParsedType, fieldRead);
         }
 
@@ -591,61 +559,75 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return lookupResult;
         }
 
-        public static Expression GetParseExpression(ParseRule parseRule, Expression initialRecord)
+        public static Expression GetParseExpression(ParseRule parseRule, Expression localVars = null, Expression initialThis = null)
         {
-            return GetParseExpression(Expression.Constant(parseRule), parseRule.ParsedType, initialRecord);
+            Debug.Assert(localVars == null || localVars.Type == typeof(ParseRuleLocalVars));
+            return GetParseExpression(Expression.Constant(parseRule), parseRule.ParsedType, localVars, initialThis);
         }
 
-        public static Expression GetParseExpression(RecordType thisType, Expression recordParam, RecordType parsedType, RecordField parseRuleField, Expression initialRecord)
+        public static Expression GetReadRuleAndParseExpression(RecordType thisType, Expression recordParam, RecordType parsedType, RecordField parseRuleField, Expression previousFieldVal)
         {
             Expression parseRule = GetFieldReadExpression(thisType, LocalVarsParameter, recordParam, parseRuleField);
-            return GetParseExpression(parseRule, parsedType, initialRecord);
+            return GetParseExpression(parseRule, parsedType, null, previousFieldVal);
         }
 
-        public static Expression GetParseExpression(Expression parseRule, RecordType parsedType, Expression initialRecord)
+        public static Expression GetParseExpression(Expression parseRule, RecordType parsedType, Expression localVars = null, Expression initialThis = null)
         {
+            if (localVars == null)
+            {
+                localVars = GetNewFrameLocalVars();
+            }
+            if (parsedType.ReflectionType == typeof(object))
+            {
+                initialThis = Expression.Default(typeof(object));
+            }
+            else if (initialThis == null)
+            {
+                initialThis = GetCreateAndInitExpression(parsedType);
+            }
             //TODO: improve error handling when dynamicly loaded parseRule doesn't parse parsedType
             MethodInfo parseMethod = typeof(ParseRule).GetMethod("Parse").MakeGenericMethod(parsedType.ReflectionType);
-            if(initialRecord.Type != parsedType.ReflectionType)
-            {
-                //TODO: reading 'this' as initialRecord from a location typed object means we have to do casting.
-                initialRecord = Expression.Convert(initialRecord, parsedType.ReflectionType);
-            }
-            Expression result = Expression.Call(parseRule, parseMethod, StreamReaderParameter, initialRecord);
+            
+            //TODO: handle case where parsedType is known but exact parseRule is not known
+            Expression result = Expression.Call(parseRule, parseMethod, StreamReaderParameter);
             if (parseRule.NodeType == ExpressionType.Constant)
             {
-                result = GetBuiltinParseRule((ParseRule)((ConstantExpression)parseRule).Value) ?? result;
+                result = GetParseRuleExpression((ParseRule)((ConstantExpression)parseRule).Value, localVars, initialThis);
             }
             return result;
         }
 
-        public static Expression GetBuiltinParseRule(ParseRule parseRule)
+        public static Expression GetParseRuleExpression(ParseRule parseRule, Expression localVars, Expression initialThis)
         {
-            switch (parseRule.Id)
+            switch (parseRule.Name)
             {
-                case (int)PrimitiveParseRuleId.Boolean:
+                case "Boolean":
                     MethodInfo readByte = typeof(IStreamReader).GetMethod("ReadByte", BindingFlags.Public | BindingFlags.Instance);
                     return Expression.NotEqual(Expression.Call(StreamReaderParameter, readByte), Expression.Constant((byte)0));
-                case (int)PrimitiveParseRuleId.FixedUInt8:
+                case "FixedByte":
                     MethodInfo readByte2 = typeof(IStreamReader).GetMethod("ReadByte", BindingFlags.Public | BindingFlags.Instance);
                     return Expression.Call(StreamReaderParameter, readByte2);
-                case (int)PrimitiveParseRuleId.FixedInt16:
+                case "FixedInt16":
                     MethodInfo readInt16 = typeof(IStreamReader).GetMethod("ReadInt16", BindingFlags.Public | BindingFlags.Instance);
                     return Expression.Call(StreamReaderParameter, readInt16);
-                case (int)PrimitiveParseRuleId.FixedInt32:
+                case "FixedInt32":
                     MethodInfo readInt32 = typeof(IStreamReader).GetMethod("ReadInt32", BindingFlags.Public | BindingFlags.Instance);
                     return Expression.Call(StreamReaderParameter, readInt32);
-                case (int)PrimitiveParseRuleId.FixedInt64:
+                case "FixedInt64":
                     MethodInfo readInt64 = typeof(IStreamReader).GetMethod("ReadInt64", BindingFlags.Public | BindingFlags.Instance);
                     return Expression.Call(StreamReaderParameter, readInt64);
-                case (int)PrimitiveParseRuleId.Guid:
+                case "Guid":
                     MethodInfo readGuid = typeof(IStreamWriterExentions).GetMethod("ReadGuid", BindingFlags.Public | BindingFlags.Static);
                     return Expression.Call(readGuid, StreamReaderParameter);
-                case (int)PrimitiveParseRuleId.UTF8String:
+                case "UTF8String":
                     MethodInfo readUtf8 = typeof(ParseFunctions).GetMethod("ReadUTF8String", BindingFlags.Public | BindingFlags.Static);
                     return Expression.Call(readUtf8, StreamReaderParameter);
                 default:
-                    return null;
+                    MethodInfo initFrame = typeof(ParseRuleLocalVars).GetMethod("InitFrame", BindingFlags.Public | BindingFlags.Instance);
+                    localVars = Expression.Call(localVars, initFrame, StreamReaderParameter);
+                    MethodInfo parseWithInstructions = typeof(ParseRule).GetMethod("ParseWithInstructions", BindingFlags.NonPublic | BindingFlags.Instance)
+                                                        .MakeGenericMethod(parseRule.ParsedType.ReflectionType);
+                    return Expression.Call(Expression.Constant(parseRule), parseWithInstructions, localVars, StreamReaderParameter, initialThis);
             }
         }
 
@@ -836,47 +818,12 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         }
     }
 
-    internal enum PrimitiveParseRuleId
+    internal class ParseRule : BindableRecord
     {
-        Boolean = 0,
-        FixedUInt8 = 1,
-        FixedInt16 = 2,
-        FixedInt32 = 3,
-        FixedInt64 = 4,
-        VarUInt16 =  5,     // UInt16 is divided into 7bit chunks from least significant chunk to most significant chunk
-                            // Each 7 bit chunk is written as a byte where a 1 bit is prepended if there are more chunks
-                            // to come and 0 if it is the last chunk. This encoding uses at most 3 bytes. Example:
-                            // Decimal: 53,241
-                            // Binary: 1100 1111 1111 1001
-                            // 7 bit chunks ordered least->most significant: 1111001 0011111 0000011
-                            // Byte encoding: 11111001 10011111 00000011
-        VarUInt32 =  6,     
-        VarUInt64 =  7,
-        UTF8String = 8,     // Default string parser is a VarUInt32 count, followed by count bytes (not chars!) of UTF8 data
-                            // Example: 0x3,        0x41, 0x42, 0x43
-                            //          Len=3       'A'   'B'   'C'  = "ABC"
-        Guid       = 9,
-
-        // add new rules here and increase Count
-        Count      = 10 
-    }
-
-    internal class ParseRule : Record
-    {
-        public static ParseRule Boolean = new ParseRule((int)PrimitiveParseRuleId.Boolean, "Builtin.Boolean", RecordType.Boolean);
-        public static ParseRule FixedUInt8 = new ParseRule((int)PrimitiveParseRuleId.FixedUInt8, "Builtin.FixedUInt8", RecordType.UInt8);
-        public static ParseRule FixedInt16 = new ParseRule((int)PrimitiveParseRuleId.FixedInt16, "Builtin.FixedInt16", RecordType.Int16);
-        public static ParseRule FixedInt32 = new ParseRule((int)PrimitiveParseRuleId.FixedInt32, "Builtin.FixedInt32", RecordType.Int32);
-        public static ParseRule FixedInt64 = new ParseRule((int)PrimitiveParseRuleId.FixedInt64, "Builtin.FixedInt64", RecordType.Int64);
-        public static ParseRule UTF8String = new ParseRule((int)PrimitiveParseRuleId.UTF8String, "Builtin.UTF8String", RecordType.String);
-        public static ParseRule Guid = new ParseRule((int)PrimitiveParseRuleId.Guid, "Builtin.Guid", RecordType.Guid);
-
-        public int Id;
-        public string Name;
-        public RecordType ParsedType;
+        [RecordField] public RecordType ParsedType;
         public ParseInstruction[] Instructions;
 
-        //Delegate _cachedParseFunc; //Func<IStreamReader, T, T> where T = ParsedType.ReflectionType
+        Func<IStreamReader, object> _cachedParseFunc;
 
         public ParseRule() { }
         public ParseRule(int id, string name, RecordType parsedType, params ParseInstruction[] instructions)
@@ -886,7 +833,6 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             ParsedType = parsedType;
             Instructions = instructions;
             //TODO: validate instructions
-            //_cachedParseFunc = RecordParserCodeGen.GetParseDelegate(this);
             OnParseComplete();
         }
         public void OnParseComplete()
@@ -895,32 +841,27 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             {
                 instr.ThisType = ParsedType;
             }
+            _cachedParseFunc = RecordParserCodeGen.GetParseDelegate(this);
         }
 
-        public T Parse<T>(IStreamReader reader, T record)
+        private T ParseWithInstructions<T>(ParseRuleLocalVars locals, IStreamReader reader, T initialThis)
         {
             Debug.WriteLine("Reading " + Name.ToString() + " at: " + reader.Current);
-            if(ParsedType.ReflectionType != typeof(T))
-            {
-                throw new ArgumentException("Expected record of type " + ParsedType.ReflectionType.FullName + ", actual type is " + typeof(T).FullName);
-            }
-            if(Id < (int)PrimitiveParseRuleId.Count)
-            {
-                // Use a StoreRead or AddRead instruction to do the parse indirectly
-                // The primitive parsers produce types that don't derive from Record and may not be reference types which makes them 
-                // more awkward to work with in the API.
-                throw new InvalidOperationException("Parse not supported for primitive ParseRules");
-            }
-            ParsedType.InitInstance(record);
-            ParseRuleLocalVars vars = RecordType.ParseRuleLocalVars.CreateInstance<ParseRuleLocalVars>();
-            vars.InitReader(reader);
-            //return ((Func<IStreamReader,T,T>)_cachedParseFunc)(reader, record);
-            
+            Debug.Assert(ParsedType.ReflectionType == typeof(T));
             foreach (ParseInstruction instruction in Instructions)
             {
-                instruction.Execute(reader, vars, ref record);
+                instruction.Execute(reader, locals, ref initialThis);
             }
-            return record;
+            return initialThis;
+        }
+
+        public T Parse<T>(IStreamReader reader)
+        {
+            return (T) _cachedParseFunc(reader);
+        }
+        public override string ToString()
+        {
+            return Name + "(" + Id + ")";
         }
     }
 
@@ -928,16 +869,16 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
     {
         IStreamReader _reader;
         StreamLabel _positionStart;
-        public void InitReader(IStreamReader reader)
+        public ParseRuleLocalVars InitFrame(IStreamReader reader)
         {
             _reader = reader;
             _positionStart = _reader.Current;
+            return this;
         }
 
-        public int TempInt32;
-        public ParseRule TempParseRule;
-        public object This;
-        public int CurrentOffset
+        [RecordField] public int TempInt32;
+        [RecordField] public ParseRule TempParseRule;
+        [RecordField] public int CurrentOffset
         {
             get { return _reader.Current.Sub(_positionStart); }
             set
@@ -962,32 +903,78 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         {
             return RecordParserCodeGen.GetRecordFieldDelegate<Record, T>(_recordType, field)(this);
         }
-        public virtual Record Clone<T>() where T : Record, new()
+        public virtual T Clone<T>() where T : Record, new()
         {
             if(_recordType == null)
             {
                 return new T();
             }
             T copy = _recordType.CreateInstance<T>();
+            _recordType.Copy((T)this, copy);
+            /*
             if(DynamicFields != null)
             {
                 for(int i = 0; i < DynamicFields.Length; i++)
                 {
                     Array.Copy((Array)DynamicFields[i], (Array)copy.DynamicFields[i], ((Array)DynamicFields[i]).Length);
                 }
-            }
+            }*/
             return copy;
         }
     }
 
-    internal class RecordTable : Record
+    internal class BindableRecord : Record
     {
-        public string Name;
-        public RecordType ItemType;
-        public int Id;
-        public RecordField PrimaryKeyField;
-        public int CacheSize;
+        [RecordField] public int Id;
+        [RecordField] public string Name;
+
+        public virtual object GetBindingKey()
+        {
+            if (string.IsNullOrEmpty(Name))
+            {
+                throw new SerializationException("Name must be non-empty");
+            }
+            return Name;
+        }
     }
+
+    internal class RecordBlock : Record
+    {
+        [RecordField]public int RecordCount;
+    }
+
+    internal class RecordParserContext
+    {
+        public RecordTypeTable Types { get; private set; }
+        public RecordFieldTable Fields { get; private set; }
+        public RecordTableTable Tables { get; private set; }
+        public ParseRuleTable ParseRules { get; private set; }
+        public RecordParserContext()
+        {
+            RecordType table = new RecordType(0, "Table", typeof(RecordTable));
+            RecordType int32 = new RecordType(0, "Int32", typeof(int));
+            RecordField tableId = new RecordField(0, "Id", table, int32);
+            Tables = new RecordTableTable(table, tableId);
+            Types = Tables.Types;
+            Fields = Tables.Fields;
+            ParseRules = Tables.ParseRules;
+
+        }
+        public T Parse<T>(IStreamReader reader, ParseRule rule)
+        {
+            return rule.Parse<T>(reader);
+        }
+    }
+
+    [Record("Table")]
+    internal class RecordTable : BindableRecord
+    {
+        [RecordField] public RecordType ItemType;
+        [RecordField] public RecordField PrimaryKeyField;
+        [RecordField] public int CacheSize;
+        protected virtual void OnParseComplete() { }
+    }
+
     internal class RecordTable<T> : RecordTable
     {
         Func<T, int> _getKeyDelegate;
@@ -998,10 +985,23 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             Name = name;
             ItemType = itemType;
             PrimaryKeyField = primaryKeyField;
+            OnParseComplete();
+        }
+
+        protected override void OnParseComplete()
+        {
             if (PrimaryKeyField != null)
             {
                 _getKeyDelegate = RecordParserCodeGen.GetRecordFieldDelegate<T, int>(ItemType, PrimaryKeyField);
             }
+        }
+
+        protected virtual T OnPublish(T item)
+        {
+            T itemCopy = ItemType.CreateInstance<T>();
+            ItemType.Copy(item, itemCopy);
+            Add(itemCopy);
+            return item;
         }
 
         public virtual T Add(T item)
@@ -1014,146 +1014,166 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return item;
         }
         public bool ContainsKey(int key) => _lookupTable.ContainsKey(key);
-        public T Get(int key) => _lookupTable[key];
-        public IEnumerable<T> Values => _lookupTable.Values;
+        public T Get(int key) { _lookupTable.TryGetValue(key, out T val); return val; }
+        public virtual IEnumerable<T> Values => _lookupTable.Values;
+        public virtual int Count => _lookupTable.Count;
     }
 
-    internal class RecordBlock : Record
+    internal class BindableRecordTable<Key, T> : RecordTable<T> where T : BindableRecord
     {
-        int RecordCount;
-    }
+        Dictionary<object, T> _bindingKeyLookupTable = new Dictionary<object, T>();
 
-    internal class RecordParserContext
-    {
-        public RecordTypeTable Types { get; private set; }
-        public RecordFieldTable Fields { get; private set; }
-        public RecordTableTable Tables { get; private set; }
-        public ParseRuleTable ParseRules { get; private set; }
-        public RecordParserContext()
+        public BindableRecordTable(string name, RecordType itemType, RecordField primaryKeyField) : base(name, itemType, primaryKeyField) { }
+
+        public override T Add(T item)
         {
-            Tables = new RecordTableTable();
-            Types = Tables.Types;
-            Fields = Tables.Fields;
-            ParseRules = Tables.ParseRules;
+            object key = item.GetBindingKey();
+            if (!_bindingKeyLookupTable.TryGetValue(key, out T existingItem))
+            {
+                _bindingKeyLookupTable[key] = existingItem = item;
+                if(item.Id != 0)
+                {
+                    base.Add(item);
+                }
+            }
+            else if(item.Id != 0 && existingItem.Id == 0)
+            {
+                Bind(existingItem, item.Id);
+            }
+            else if(item.Id != 0 && existingItem.Id != item.Id)
+            {
+                throw new SerializationException(Name + " table can not add new item " + item.ToString() + " because the key is already in use by " + existingItem.ToString());
+            }
+            return existingItem;
+        }
 
-        }
-        public T Parse<T>(IStreamReader reader, ParseRule rule)
+        public void Bind(T item, int id)
         {
-            T record = rule.ParsedType.CreateInstance<T>();
-            return rule.Parse(reader, record);
+            Debug.Assert(item.Id == 0);
+            item.Id = id;
+            base.Add(item);
         }
+
+        public T Get(Key key) { _bindingKeyLookupTable.TryGetValue(key, out T ret); return ret; }
+        public override IEnumerable<T> Values => _bindingKeyLookupTable.Values;
+        public override int Count => _bindingKeyLookupTable.Count;
     }
 
-    internal class RecordTypeTable : RecordTable<RecordType>
+    internal class RecordTypeTable : BindableRecordTable<string, RecordType>
     {
+        public RecordType Object { get; private set; }
+        public RecordType Boolean { get; private set; }
+        public RecordType Byte { get; private set; }
+        public RecordType Int16 { get; private set; }
+        public RecordType Int32 { get; private set; }
+        public RecordType Int64 { get; private set; }
+        public RecordType UInt16 { get; private set; }
+        public RecordType UInt32 { get; private set; }
+        public RecordType UInt64 { get; private set; }
+        public RecordType String { get; private set; }
+        public RecordType Guid { get; private set; }
+        public RecordType Type { get; private set; }
+        public RecordType Field { get; private set; }
+        public RecordType Table { get; private set; }
+        public RecordType ParseRule { get; private set; }
+        public RecordType ParseRuleLocalVars { get; private set; }
+        public RecordType RecordBlock { get; private set; }
+        public RecordType ParseInstruction { get; private set; }
+
+        RecordFieldTable _fields;
         Dictionary<string, RecordType> _nameToType = new Dictionary<string, RecordType>();
 
-        public RecordTypeTable() : base("Type", RecordType.Type, RecordType.Type.GetField("Id"))
+        public RecordTypeTable(RecordFieldTable fields, RecordType type, RecordField typeId, RecordType field) : base("Type", type, typeId)
         {
-            Id = 1;
-            foreach (RecordType t in RecordType.WellKnownTypes)
-            {
-                Add(t);
-            }
+            _fields = fields;
+            Object = GetOrCreate(typeof(object));
+            Boolean = GetOrCreate(typeof(bool));
+            Byte = GetOrCreate(typeof(byte));
+            Int16 = GetOrCreate(typeof(short));
+            Int32 = Add(typeId.FieldType);
+            Int64 = GetOrCreate(typeof(long));
+            UInt16 = GetOrCreate(typeof(ushort));
+            UInt32 = GetOrCreate(typeof(uint));
+            UInt64 = GetOrCreate(typeof(ulong));
+            String = GetOrCreate(typeof(string));
+            Guid = GetOrCreate(typeof(Guid));
+            Type = Add(type);
+            Field = Add(field);
+            Table = GetOrCreate(typeof(RecordTable));
+            ParseRule = GetOrCreate(typeof(ParseRule));
+            ParseRuleLocalVars = GetOrCreate(typeof(ParseRuleLocalVars));
+            _fields.Add(new RecordField(0, "This", ParseRuleLocalVars, null));
+            _fields.Add(new RecordField(0, "Null", ParseRuleLocalVars, null));
+            RecordBlock = GetOrCreate(typeof(RecordBlock));
+            ParseInstruction = GetOrCreate(typeof(ParseInstruction));
+            OnParseComplete();
         }
 
         public override RecordType Add(RecordType item)
         {
-            if(string.IsNullOrEmpty(item.Name))
+            if(Get(item.Name) == null)
             {
-                throw new ArgumentException("RecordType Name must be non-empty");
-            }
-            if(ContainsKey(item.Id))
-            {
-                RecordType matchingIdType = Get(item.Id);
-                if(item.Name == matchingIdType.Name)
-                {
-                    return matchingIdType;
-                }
-                throw new ArgumentException("Can not add new type " + item.ToString() + " because the Id is already in use by " + matchingIdType.ToString());
-            }
-            if(_nameToType.TryGetValue(item.Name, out RecordType existingType))
-            {
-                if (existingType.Id == 0)
-                {
-                    existingType.Id = item.Id;
-                    item = existingType;
-                }
-                else
-                {
-                    throw new ArgumentException("Can not add new type " + item.ToString() + " because the Name is already in use by " + Get(item.Name).ToString());
-                }
-            }
-            else
-            {
-                _nameToType.Add(item.Name, item);
+                base.Add(item);
+                AddFields(item);
             }
             return base.Add(item);
         }
 
-        public RecordType Get(string name)
+        public RecordType GetOrCreate(Type reflectionType)
         {
-            return _nameToType[name];
+            //TODO: handle array
+            Debug.Assert(!reflectionType.IsArray);
+            string name = reflectionType.GetTypeInfo().GetCustomAttribute<RecordAttribute>()?.Name ?? reflectionType.Name;
+            return Add(new RecordType(0, name, reflectionType));
         }
 
-        public RecordType GetOrCreate(string name)
+        private void AddFields(RecordType type)
         {
-            return GetOrCreate(new RecordType(0, name, typeof(Record)));
-        }
-
-        public RecordType GetOrCreate(RecordType type)
-        {
-            if (!_nameToType.TryGetValue(type.Name, out RecordType tableType))
+            foreach(RecordField field in type.GetFields())
             {
-                tableType = _nameToType[type.Name] = type;
+                _fields.Add(field);
             }
-            return tableType;
+            if (type.ReflectionType != null)
+            {
+                foreach (FieldInfo field in type.ReflectionType.GetFields().Where(f => f.GetCustomAttributes(typeof(RecordFieldAttribute)).Any()))
+                {
+                    RecordType fieldType = GetOrCreate(field.FieldType);
+                    _fields.Add(type.GetField(field.Name) ?? new RecordField(0, field.Name, type, fieldType));
+                }
+                foreach (PropertyInfo prop in type.ReflectionType.GetProperties().Where(f => f.GetCustomAttributes(typeof(RecordFieldAttribute)).Any()))
+                {
+                    RecordType propType = GetOrCreate(prop.PropertyType);
+                    _fields.Add(type.GetField(prop.Name) ?? new RecordField(0, prop.Name, type, propType));
+                }
+            }
         }
     }
 
-    internal class RecordFieldTable : RecordTable<RecordField>
+    internal class RecordFieldTable : BindableRecordTable<Tuple<string,RecordType>, RecordField>
     {
-        public RecordFieldTable() : base("Field", RecordType.Field, RecordType.Field.GetField("Id"))
-        {
-            Id = 2;
-            foreach (RecordType type in RecordType.WellKnownTypes)
-                foreach(RecordField field in type.GetFields())
-                base.Add(field);
-        }
+        public RecordFieldTable(RecordType field, RecordField fieldId) : base("Field", field, fieldId) {}
 
-        public override RecordField Add(RecordField item)
+        public override RecordField Add(RecordField field)
         {
-            if (string.IsNullOrEmpty(item.Name))
+            field = base.Add(field);
+            RecordField existingField = field.ContainingType.GetField(field.Name);
+            if(existingField == null)
             {
-                throw new ArgumentException("RecordField.Name must be non-empty");
+                field.ContainingType.AddField(field);
             }
-            if (item.ContainingType == null)
-            {
-                throw new ArgumentException("RecordField.ContainingType must be non-null");
-            }
-            if (item.FieldType == null)
-            {
-                throw new ArgumentException("RecordField.FieldType must be non-null");
-            }
-            if (ContainsKey(item.Id))
-            {
-                throw new ArgumentException("Can not add new field " + item.ToString() + " because the Id is already in use by " + Get(item.Id).ToString());
-            }
-            RecordField existingField = item.ContainingType.GetField(item.Name);
-            if (existingField != null)
-            {
-                throw new ArgumentException("Can not add new field " + item.ToString() + " because the Name is already in use by " + existingField.ToString());
-            }
-            return base.Add(item);
+            return field;
         }
     }
-    internal class RecordTableTable : RecordTable<RecordTable>
+    internal class RecordTableTable : BindableRecordTable<string, RecordTable>
     {
-        public RecordTableTable() : base("Table", RecordType.Table, RecordType.Table.GetField("Id"))
+        public RecordTableTable(RecordType tableType, RecordField tableId) : base("Table", tableType, tableId)
         {
-            Id = 3;
-            base.Add(Types = new RecordTypeTable());
-            base.Add(Fields = new RecordFieldTable());
+            RecordType type = new RecordType(0, "Type", typeof(RecordType));
+            RecordField typeId = new RecordField(0, "Id", type, tableId.FieldType);
+            RecordType field = new RecordType(0, "Field", typeof(RecordField));
+            RecordField fieldId = new RecordField(0, "Id", field, tableId.FieldType);
+            base.Add(Fields = new RecordFieldTable(field, fieldId));
+            base.Add(Types = new RecordTypeTable(Fields, type, typeId, field));
             base.Add(ParseRules = new ParseRuleTable(Types, Fields, this));
             base.Add(this);
         }
@@ -1167,8 +1187,9 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         }
     }
 
-    internal class ParseRuleTable : RecordTable<ParseRule>
+    internal class ParseRuleTable : BindableRecordTable<string, ParseRule>
     {
+        public ParseRule Object { get; private set; }
         public ParseRule Boolean { get; private set; }
         public ParseRule FixedUInt8 { get; private set; }
         public ParseRule FixedInt16 { get; private set; }
@@ -1183,10 +1204,12 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public ParseRule Field { get; private set; }
         public ParseRule Table { get; private set; }
         public ParseRule ParseRule { get; private set; }
+        public ParseRule ParseRuleBinding { get; private set; }
         public ParseRule TypeBlock { get; private set; }
         public ParseRule FieldBlock { get; private set; }
         public ParseRule TableBlock { get; private set; }
         public ParseRule ParseRuleBlock { get; private set; }
+        public ParseRule ParseRuleBindingBlock { get; private set; }
         public ParseRule ParseInstruction { get; private set; }
         public ParseRule ParseInstructionStoreConstant { get; private set; }
         public ParseRule ParseInstructionStoreRead { get; private set; }
@@ -1198,79 +1221,107 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public ParseRule ParseInstructionIterateRead { get; private set; }
 
         public ParseRuleTable(RecordTypeTable types, RecordFieldTable fields, RecordTableTable tables) : 
-            base("ParseRule", RecordType.ParseRule, RecordType.ParseRule.GetField("Id"))
+            base("ParseRule", types.ParseRule, types.ParseRule.GetField("Id"))
         {
-            Id = 4;
-            Add(FixedInt32 = new ParseRule((int)PrimitiveParseRuleId.FixedInt32, "Builtin.FixedInt32", types.Get("Int32")));
-            Add(UTF8String = new ParseRule((int)PrimitiveParseRuleId.UTF8String, "Builtin.UTF8String", types.Get("String")));
-            Add(Type = new ParseRule(100, "Builtin.Type", RecordType.Type,
-                new ParseInstructionStoreRead(RecordType.Type, RecordType.Type.GetField("Id"), ParseRule.FixedInt32),
-                new ParseInstructionStoreRead(RecordType.Type, RecordType.Type.GetField("Name"), ParseRule.UTF8String),
-                new ParseInstructionPublish(RecordType.Type, types)));
-            Add(Field = new ParseRule(101, "Builtin.Field", RecordType.Field,
-                new ParseInstructionStoreRead(RecordType.Field, RecordType.Field.GetField("Id"), ParseRule.FixedInt32),
-                new ParseInstructionStoreReadLookup(RecordType.Field, RecordType.Field.GetField("ContainingType"), ParseRule.FixedInt32, types),
-                new ParseInstructionStoreReadLookup(RecordType.Field, RecordType.Field.GetField("FieldType"), ParseRule.FixedInt32, types),
-                new ParseInstructionStoreRead(RecordType.Field, RecordType.Field.GetField("Name"), ParseRule.UTF8String),
-                new ParseInstructionPublish(RecordType.Field, fields)));
-            Add(Table = new ParseRule(102, "Builtin.Table", RecordType.Table,
-                new ParseInstructionStoreRead(RecordType.Table, RecordType.Table.GetField("Id"), ParseRule.FixedInt32),
-                new ParseInstructionStoreReadLookup(RecordType.Table, RecordType.Table.GetField("ItemType"), ParseRule.FixedInt32, types),
-                new ParseInstructionStoreReadLookup(RecordType.Table, RecordType.Table.GetField("PrimaryKeyField"), ParseRule.FixedInt32, fields),
-                new ParseInstructionStoreRead(RecordType.Table, RecordType.Table.GetField("Name"), ParseRule.UTF8String),
-                new ParseInstructionPublish(RecordType.Table,tables)));
-            Add(ParseRule = new ParseRule(103, "Builtin.ParseRule", RecordType.ParseRule,
-                new ParseInstructionStoreRead(RecordType.ParseRule, RecordType.ParseRule.GetField("Id"), ParseRule.FixedInt32),
-                new ParseInstructionStoreReadLookup(RecordType.ParseRule, RecordType.ParseRule.GetField("ParsedType"), ParseRule.FixedInt32, types),
-                new ParseInstructionStoreRead(RecordType.ParseRule, RecordType.ParseRuleLocalVars.GetField("TempInt32"), ParseRule.FixedInt32)/*,
-            Add( new ParseInstructionStoreRead(RecordType.Table.GetField("Instructions"), ParseRule.FixedInt32)*/));
-            Add(ParseInstruction = new ParseRule(9000, "Builtin.ParseInstruction", RecordType.ParseInstruction,
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseRuleLocalVars.GetField("TempParseRule"), ParseRule.FixedInt32, this),
-                new ParseInstructionStoreRead(RecordType.ParseInstruction, RecordType.ParseRuleLocalVars.GetField("This"), RecordType.ParseInstruction, RecordType.ParseRuleLocalVars.GetField("TempParseRule"))));
-            Add(ParseInstructionStoreConstant = new ParseRule(9001, "Builtin.ParseInstructionStoreConstant", RecordType.ParseInstruction,
-                new ParseInstructionStoreConstant(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("InstructionType"), RecordType.Int32, ParseInstructionType.StoreConstant),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("DestinationField"), ParseRule.FixedInt32, fields),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("ConstantType"), ParseRule.FixedInt32, types),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseRuleLocalVars.GetField("TempParseRule"), ParseRule.FixedInt32, this),
-                new ParseInstructionStoreRead(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("Constant"), RecordType.Object, RecordType.ParseRuleLocalVars.GetField("TempParseRule"))));
-            Add(ParseInstructionStoreRead = new ParseRule(105, "Builtin.ParseInstructionStoreRead", RecordType.ParseInstruction,
-                new ParseInstructionStoreConstant(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("InstructionType"), RecordType.Int32, ParseInstructionType.StoreRead),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("DestinationField"), ParseRule.FixedInt32, fields),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("ParseRule"), ParseRule.FixedInt32, this)));
-            Add(ParseInstructionStoreReadDynamic = new ParseRule(7777, "Builtin.ParseInstructionStoreReadDynamic", RecordType.ParseInstruction,
-                new ParseInstructionStoreConstant(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("InstructionType"), RecordType.Int32, ParseInstructionType.StoreRead),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("DestinationField"), ParseRule.FixedInt32, fields),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("ParsedType"), ParseRule.FixedInt32, types),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("ParseRuleField"), ParseRule.FixedInt32, fields)));
-            Add(ParseInstructionStoreReadLookup = new ParseRule(106, "Builtin.ParseInstructionStoreReadLookup", RecordType.ParseInstruction,
-                new ParseInstructionStoreConstant(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("InstructionType"), RecordType.Int32, ParseInstructionType.StoreReadLookup),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("DestinationField"), ParseRule.FixedInt32, fields),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("ParseRule"), ParseRule.FixedInt32, this),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("LookupTable"), ParseRule.FixedInt32, tables)));
-            Add(ParseInstructionStoreField = new ParseRule(9002, "Builtin.ParseInstructionStoreField", RecordType.ParseInstruction,
-                new ParseInstructionStoreConstant(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("InstructionType"), RecordType.Int32, ParseInstructionType.StoreField),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("DestinationField"), ParseRule.FixedInt32, fields),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("SourceField"), ParseRule.FixedInt32, fields)));
-            Add(ParseInstructionStoreFieldLookup = new ParseRule(107, "Builtin.ParseInstructionStoreFieldLookup", RecordType.ParseInstruction,
-                new ParseInstructionStoreConstant(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("InstructionType"), RecordType.Int32, ParseInstructionType.StoreFieldLookup),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("DestinationField"), ParseRule.FixedInt32, fields),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("SourceField"), ParseRule.FixedInt32, fields),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("LookupTable"), ParseRule.FixedInt32, tables)));
-            Add(ParseInstructionPublish = new ParseRule(108, "Builtin.ParseInstructionPublish", RecordType.ParseInstruction,
-                new ParseInstructionStoreConstant(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("InstructionType"), RecordType.Int32, ParseInstructionType.Publish),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("PublishStream"), ParseRule.FixedInt32, tables)));
-            Add(ParseInstructionIterateRead = new ParseRule(109, "Builtin.ParseInstructionIterateRead", RecordType.ParseInstruction,
-                new ParseInstructionStoreConstant(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("InstructionType"), RecordType.Int32, ParseInstructionType.IterateRead),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("CountField"), ParseRule.FixedInt32, fields),
-                new ParseInstructionStoreReadLookup(RecordType.ParseInstruction, RecordType.ParseInstruction.GetField("ParseRule"), ParseRule.FixedInt32, this)));
-            Add(TypeBlock = new ParseRule(110, "Builtin.TypeBlock", RecordType.RecordBlock,
-                new ParseInstructionStoreRead(RecordType.ParseInstruction, RecordType.RecordBlock.GetField("EntryCount"), ParseRule.FixedInt32),
-                new ParseInstructionIterateRead(RecordType.RecordBlock,Type, RecordType.RecordBlock.GetField("EntryCount"))));
-            Add(FieldBlock = new ParseRule(111, "Builtin.FieldBlock", RecordType.RecordBlock,
-                new ParseInstructionStoreRead(RecordType.RecordBlock, RecordType.RecordBlock.GetField("EntryCount"), ParseRule.FixedInt32),
-                new ParseInstructionIterateRead(RecordType.RecordBlock, Field, RecordType.RecordBlock.GetField("EntryCount"))));
+            Add(Boolean = new ParseRule(0, "Boolean", types.Boolean));
+            Add(FixedUInt8 = new ParseRule(0, "FixedByte", types.Byte));
+            Add(FixedInt16 = new ParseRule(0, "FixedInt16", types.Int16));
+            Add(FixedInt32 = new ParseRule(0, "FixedInt32", types.Int32));
+            Add(FixedInt64 = new ParseRule(0, "FixedInt64", types.Int64));
+            Add(VarUInt16 = new ParseRule(0, "VarUInt16", types.UInt16));
+            Add(VarUInt32 = new ParseRule(0, "VarUInt32", types.UInt32));
+            Add(VarUInt64 = new ParseRule(0, "VarUInt64", types.UInt64));
+            Add(UTF8String = new ParseRule(0, "UTF8String", types.String));
+            Add(Guid = new ParseRule(0, "Guid", types.Guid));
+            Add(Object = new ParseRule(0, "Object", types.Object,
+                new ParseInstructionStoreReadLookup(types.Object, types.ParseRuleLocalVars.GetField("TempParseRule"), FixedInt32, this),
+                new ParseInstructionStoreRead(types.Object, types.ParseRuleLocalVars.GetField("This"), types.Object, types.ParseRuleLocalVars.GetField("TempParseRule"))));
+            Add(Type = new ParseRule(0, "Type", types.Type,
+                new ParseInstructionStoreRead(types.Type, types.Type.GetField("Id"), FixedInt32),
+                new ParseInstructionStoreRead(types.Type, types.Type.GetField("Name"), UTF8String),
+                new ParseInstructionPublish(types.Type, types)));
+            Add(Field = new ParseRule(0, "Field", types.Field,
+                new ParseInstructionStoreRead(types.Field, types.Field.GetField("Id"), FixedInt32),
+                new ParseInstructionStoreReadLookup(types.Field, types.Field.GetField("ContainingType"), FixedInt32, types),
+                new ParseInstructionStoreReadLookup(types.Field, types.Field.GetField("FieldType"), FixedInt32, types),
+                new ParseInstructionStoreRead(types.Field, types.Field.GetField("Name"), UTF8String),
+                new ParseInstructionPublish(types.Field, fields)));
+            Add(Table = new ParseRule(0, "Table", types.Table,
+                new ParseInstructionStoreRead(types.Table, types.Table.GetField("Id"), FixedInt32),
+                new ParseInstructionStoreReadLookup(types.Table, types.Table.GetField("ItemType"), FixedInt32, types),
+                new ParseInstructionStoreReadLookup(types.Table, types.Table.GetField("PrimaryKeyField"), FixedInt32, fields),
+                new ParseInstructionStoreRead(types.Table, types.Table.GetField("Name"), UTF8String),
+                new ParseInstructionPublish(types.Table,tables)));
+            Add(ParseRule = new ParseRule(0, "ParseRule", types.ParseRule,
+                new ParseInstructionStoreRead(types.ParseRule, types.ParseRule.GetField("Id"), FixedInt32),
+                new ParseInstructionStoreReadLookup(types.ParseRule, types.ParseRule.GetField("ParsedType"), FixedInt32, types),
+                new ParseInstructionStoreRead(types.ParseRule, types.ParseRule.GetField("Name"), UTF8String),
+                new ParseInstructionStoreRead(types.ParseRule, types.ParseRuleLocalVars.GetField("TempInt32"), FixedInt32)/*,
+            Add( new ParseInstructionStoreRead(RecordType.Table.GetField("Instructions"), FixedInt32)*/ ));
+            Add(ParseRuleBinding = new ParseRule(0, "ParseRuleBinding", types.ParseRule,
+                new ParseInstructionStoreRead(types.ParseRule, types.ParseRule.GetField("Id"), FixedInt32),
+                new ParseInstructionStoreRead(types.ParseRule, types.ParseRule.GetField("Name"), UTF8String),
+                new ParseInstructionPublish(types.ParseRule, this)));
+            Add(ParseInstruction = new ParseRule(0, "ParseInstruction", types.ParseInstruction,
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseRuleLocalVars.GetField("TempParseRule"), FixedInt32, this),
+                new ParseInstructionStoreRead(types.ParseInstruction, types.ParseRuleLocalVars.GetField("This"), types.ParseInstruction, types.ParseRuleLocalVars.GetField("TempParseRule"))));
+            Add(ParseInstructionStoreConstant = new ParseRule(0, "ParseInstructionStoreConstant", types.ParseInstruction,
+                new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.StoreConstant),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("DestinationField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ConstantType"), FixedInt32, types),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseRuleLocalVars.GetField("TempParseRule"), FixedInt32, this),
+                new ParseInstructionStoreRead(types.ParseInstruction, types.ParseInstruction.GetField("Constant"), types.Object, types.ParseRuleLocalVars.GetField("TempParseRule")),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ThisType"), FixedInt32, types)));
+            Add(ParseInstructionStoreRead = new ParseRule(0, "ParseInstructionStoreRead", types.ParseInstruction,
+                new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.StoreRead),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("DestinationField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ParseRule"), FixedInt32, this),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ThisType"), FixedInt32, types)));
+            Add(ParseInstructionStoreReadDynamic = new ParseRule(0, "ParseInstructionStoreReadDynamic", types.ParseInstruction,
+                new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.StoreRead),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("DestinationField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ParsedType"), FixedInt32, types),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ParseRuleField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ThisType"), FixedInt32, types)));
+            Add(ParseInstructionStoreReadLookup = new ParseRule(0, "ParseInstructionStoreReadLookup", types.ParseInstruction,
+                new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.StoreReadLookup),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("DestinationField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ParseRule"), FixedInt32, this),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("LookupTable"), FixedInt32, tables),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ThisType"), FixedInt32, types)));
+            Add(ParseInstructionStoreField = new ParseRule(0, "ParseInstructionStoreField", types.ParseInstruction,
+                new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.StoreField),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("DestinationField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("SourceField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ThisType"), FixedInt32, types)));
+            Add(ParseInstructionStoreFieldLookup = new ParseRule(0, "ParseInstructionStoreFieldLookup", types.ParseInstruction,
+                new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.StoreFieldLookup),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("DestinationField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("SourceField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("LookupTable"), FixedInt32, tables),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ThisType"), FixedInt32, types)));
+            Add(ParseInstructionPublish = new ParseRule(0, "ParseInstructionPublish", types.ParseInstruction,
+                new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.Publish),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("PublishStream"), FixedInt32, tables),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ThisType"), FixedInt32, types)));
+            Add(ParseInstructionIterateRead = new ParseRule(0, "ParseInstructionIterateRead", types.ParseInstruction,
+                new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.IterateRead),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("CountField"), FixedInt32, fields),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ParseRule"), FixedInt32, this),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ThisType"), FixedInt32, types)));
+            Add(TypeBlock = new ParseRule(0, "TypeBlock", types.RecordBlock,
+                new ParseInstructionStoreRead(types.ParseInstruction, types.RecordBlock.GetField("RecordCount"), FixedInt32),
+                new ParseInstructionIterateRead(types.RecordBlock,Type, types.RecordBlock.GetField("RecordCount"))));
+            Add(FieldBlock = new ParseRule(0, "FieldBlock", types.RecordBlock,
+                new ParseInstructionStoreRead(types.RecordBlock, types.RecordBlock.GetField("RecordCount"), FixedInt32),
+                new ParseInstructionIterateRead(types.RecordBlock, Field, types.RecordBlock.GetField("RecordCount"))));
             //TableBlock
             //ParseRuleBlock
+            Add(ParseRuleBindingBlock = new ParseRule(0, "ParseRuleBindingBlock", types.RecordBlock,
+                new ParseInstructionStoreRead(types.RecordBlock, types.RecordBlock.GetField("RecordCount"), FixedInt32),
+                new ParseInstructionIterateRead(types.RecordBlock, ParseRuleBinding, types.RecordBlock.GetField("RecordCount"))));
+            
+
         }
     }
 }

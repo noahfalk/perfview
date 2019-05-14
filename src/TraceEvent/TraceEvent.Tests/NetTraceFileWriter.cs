@@ -61,6 +61,34 @@ namespace TraceEventTests
     /// </summary>
     internal static class RecordWriter
     {
+        public static void BindAllTables(this RecordParserContext context)
+        {
+            int i = 0;
+            foreach (RecordType t in context.Types.Values)
+            {
+                if(t.Id == 0)
+                    context.Types.Bind(t, ++i);
+            }
+            i = 0;
+            foreach (RecordField f in context.Fields.Values)
+            {
+                if(f.Id == 0)
+                    context.Fields.Bind(f, ++i);
+            }
+            i = 0;
+            foreach (RecordTable t in context.Tables.Values)
+            {
+                if(t.Id == 0)
+                    context.Tables.Bind(t, ++i);
+            }
+            i = 0;
+            foreach (ParseRule p in context.ParseRules.Values)
+            {
+                if(p.Id == 0)
+                    context.ParseRules.Bind(p, ++i);
+            }
+        }
+
         public static void Write(this BinaryWriter writer, RecordType recordType)
         {
             writer.Write((int)recordType.Id);
@@ -69,9 +97,10 @@ namespace TraceEventTests
 
         public static void Write(this BinaryWriter writer, RecordField recordField)
         {
+            Debug.WriteLine("Field: " + recordField.ToString() + " Offset: " + writer.BaseStream.Position);
             writer.Write((int)recordField.Id);
-            writer.Write((int)recordField.ContainingType.Id);
-            writer.Write((int)recordField.FieldType.Id);
+            writer.Write((int)(recordField.ContainingType != null ? recordField.ContainingType.Id : 0));
+            writer.Write((int)(recordField.FieldType != null ? recordField.FieldType.Id : 0));
             WriteUTF8String(writer, recordField.Name);
         }
 
@@ -105,6 +134,7 @@ namespace TraceEventTests
                     writer.Write(parseRules.ParseInstructionStoreConstant.Id);
                     writer.Write(instruction.DestinationField.Id);
                     writer.WriteConstant(instruction.ConstantType, instruction.Constant, parseRules);
+                    writer.Write(instruction.ThisType.Id);
                     break;
                 case ParseInstructionType.StoreRead:
                     if(instruction.ParseRule != null)
@@ -112,6 +142,7 @@ namespace TraceEventTests
                         writer.Write(parseRules.ParseInstructionStoreRead.Id);
                         writer.Write(instruction.DestinationField.Id);
                         writer.Write(instruction.ParseRule.Id);
+                        writer.Write(instruction.ThisType.Id);
                     }
                     else
                     {
@@ -119,6 +150,7 @@ namespace TraceEventTests
                         writer.Write(instruction.DestinationField.Id);
                         writer.Write(instruction.ParsedType.Id);
                         writer.Write(instruction.ParseRuleField.Id);
+                        writer.Write(instruction.ThisType.Id);
                     }
                     break;
                 case ParseInstructionType.StoreReadLookup:
@@ -126,26 +158,31 @@ namespace TraceEventTests
                     writer.Write(instruction.DestinationField.Id);
                     writer.Write(instruction.ParseRule.Id);
                     writer.Write(instruction.LookupTable.Id);
+                    writer.Write(instruction.ThisType.Id);
                     break;
                 case ParseInstructionType.StoreField:
                     writer.Write(parseRules.ParseInstructionStoreField.Id);
                     writer.Write(instruction.DestinationField.Id);
                     writer.Write(instruction.SourceField.Id);
+                    writer.Write(instruction.ThisType.Id);
                     break;
                 case ParseInstructionType.StoreFieldLookup:
                     writer.Write(parseRules.ParseInstructionStoreFieldLookup.Id);
                     writer.Write(instruction.DestinationField.Id);
                     writer.Write(instruction.SourceField.Id);
                     writer.Write(instruction.LookupTable.Id);
+                    writer.Write(instruction.ThisType.Id);
                     break;
                 case ParseInstructionType.Publish:
                     writer.Write(parseRules.ParseInstructionPublish.Id);
                     writer.Write(instruction.PublishStream.Id);
+                    writer.Write(instruction.ThisType.Id);
                     break;
                 case ParseInstructionType.IterateRead:
                     writer.Write(parseRules.ParseInstructionIterateRead.Id);
                     writer.Write(instruction.CountField.Id);
                     writer.Write(instruction.ParseRule.Id);
+                    writer.Write(instruction.ThisType.Id);
                     break;
                 default:
                     throw new SerializationException("Invalid ParseInstructionType");
@@ -199,6 +236,55 @@ namespace TraceEventTests
             else
             {
                 throw new NotImplementedException("Writing constant of type " + constantType.ToString() + " NYI");
+            }
+        }
+
+        public static void WriteParseRuleBinding(this BinaryWriter writer, ParseRule ruleBinding)
+        {
+            writer.Write(ruleBinding.Id);
+            writer.WriteUTF8String(ruleBinding.Name);
+        }
+
+        public static void WriteParseRuleBindingBlock(this BinaryWriter writer, ParseRule[] rules)
+        {
+            writer.Write(rules.Length);
+            for(int i = 0; i < rules.Length; i++)
+            {
+                writer.WriteParseRuleBinding(rules[i]);
+            }
+        }
+
+        public static void WriteParseRuleBindingBlock(this BinaryWriter writer, RecordParserContext context)
+        {
+            List<ParseRule> bindings = new List<ParseRule>();
+            foreach (ParseRule defaultRule in new RecordParserContext().ParseRules.Values)
+            {
+                ParseRule binding = context.ParseRules.Get(defaultRule.Name);
+                if(binding.Id != 0)
+                {
+                    bindings.Add(binding);
+                }
+            }
+            writer.WriteParseRuleBindingBlock(bindings.ToArray());
+        }
+
+        public static void WriteDynamicTypeBlock(this BinaryWriter writer, RecordType[] types, ParseRuleTable parseRules)
+        {
+            writer.Write(parseRules.TypeBlock.Id);
+            writer.Write(types.Length);
+            for(int i = 0; i < types.Length; i++)
+            {
+                writer.Write(types[i]);
+            }
+        }
+
+        public static void WriteDynamicFieldBlock(this BinaryWriter writer, RecordField[] fields, ParseRuleTable parseRules)
+        {
+            writer.Write(parseRules.FieldBlock.Id);
+            writer.Write(fields.Length);
+            for (int i = 0; i < fields.Length; i++)
+            {
+                writer.Write(fields[i]);
             }
         }
     }
