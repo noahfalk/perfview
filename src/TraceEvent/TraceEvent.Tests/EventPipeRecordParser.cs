@@ -925,13 +925,106 @@ namespace TraceEventTests
             RecordBlock typeBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.Object);
             RecordBlock fieldBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.Object);
 
-            Assert.Equal(context.Fields.Count, typeBlock.RecordCount);
+            Assert.Equal(context.Fields.Count, fieldBlock.RecordCount);
             foreach (var f in context.Fields.Values)
             {
                 Assert.Equal(f.Id, context2.Fields.Get(f.Id).Id);
                 Assert.Equal(f.Name, context2.Fields.Get(f.Id).Name);
                 Assert.Equal(f.ContainingType.Id, context2.Fields.Get(f.Id).ContainingType.Id);
-                Assert.Equal(f.FieldType.Id, context2.Fields.Get(f.Id).FieldType.Id);
+                if(f.FieldType == null)
+                {
+                    Assert.Null(context2.Fields.Get(f.Id).FieldType);
+                }
+                else
+                {
+                    Assert.Equal(f.FieldType.Id, context2.Fields.Get(f.Id).FieldType.Id);
+                }
+                
+            }
+        }
+
+        [Fact]
+        void SerializeTableBlock()
+        {
+            RecordParserContext context = new RecordParserContext();
+            RecordType simpleType = context.Types.GetOrCreate(typeof(SimpleRecord));
+            RecordType complexType = context.Types.GetOrCreate(typeof(ComplexRecordA));
+            context.Types.GetOrCreate(typeof(ComplexRecordB));
+            context.Tables.Add(new RecordTable<SimpleRecord>("SimpleRecords", simpleType, simpleType.GetField("Number32")));
+            context.Tables.Add(new RecordTable<SimpleRecord>("SimpleRecords", complexType));
+            context.BindAllTables();
+
+            MemoryStream ms = new MemoryStream();
+            BinaryWriter writer = new BinaryWriter(ms);
+            writer.WriteParseRuleBindingBlock(context);
+            writer.WriteDynamicTypeBlock(context.Types.Values.ToArray(), context.ParseRules);
+            writer.WriteDynamicFieldBlock(context.Fields.Values.ToArray(), context.ParseRules);
+            writer.WriteDynamicTableBlock(context.Tables.Values.ToArray(), context.ParseRules);
+
+            ms.Position = 0;
+            MemoryStreamReader reader = new MemoryStreamReader(ms.ToArray());
+            RecordParserContext context2 = new RecordParserContext();
+            RecordBlock parseRuleBindingBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.ParseRuleBindingBlock);
+            RecordBlock typeBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.Object);
+            RecordBlock fieldBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.Object);
+            RecordBlock tableBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.Object);
+
+            Assert.Equal(context.Tables.Count, tableBlock.RecordCount);
+            foreach (var t in context.Tables.Values)
+            {
+                Assert.Equal(t.Id, context2.Tables.Get(t.Id).Id);
+                Assert.Equal(t.Name, context2.Tables.Get(t.Id).Name);
+                Assert.Equal(t.ItemType.Id, context2.Tables.Get(t.Id).ItemType.Id);
+                if(t.PrimaryKeyField == null)
+                {
+                    Assert.Null(context2.Tables.Get(t.Id).PrimaryKeyField);
+                }
+                else
+                {
+                    Assert.Equal(t.PrimaryKeyField.Id, context2.Tables.Get(t.Id).PrimaryKeyField.Id);
+                }
+            }
+        }
+
+        [Fact]
+        void SerializeParseRuleBlock()
+        {
+            RecordParserContext context = new RecordParserContext();
+            RecordType simpleType = context.Types.GetOrCreate(typeof(SimpleRecord));
+            RecordType complexType = context.Types.GetOrCreate(typeof(ComplexRecordA));
+            context.Types.GetOrCreate(typeof(ComplexRecordB));
+            ParseRule simpleParseRule = context.ParseRules.Add(new ParseRule(0, "SimpleRecord", simpleType,
+                new ParseInstructionStoreRead(simpleType, simpleType.GetField("Number32"), context.ParseRules.FixedInt32),
+                new ParseInstructionStoreRead(simpleType, simpleType.GetField("String"), context.ParseRules.UTF8String)));
+            context.ParseRules.Add(new ParseRule(0, "ComplexType", complexType,
+                new ParseInstructionStoreRead(complexType, complexType.GetField("SimpleOne"), simpleParseRule),
+                new ParseInstructionStoreRead(complexType, complexType.GetField("String"), context.ParseRules.UTF8String)));
+            context.BindAllTables();
+
+            MemoryStream ms = new MemoryStream();
+            BinaryWriter writer = new BinaryWriter(ms);
+            writer.WriteParseRuleBindingBlock(context);
+            writer.WriteDynamicTypeBlock(context.Types.Values.ToArray(), context.ParseRules);
+            writer.WriteDynamicFieldBlock(context.Fields.Values.ToArray(), context.ParseRules);
+            writer.WriteDynamicTableBlock(context.Tables.Values.ToArray(), context.ParseRules);
+            writer.WriteDynamicParseRuleBlock(context);
+
+            ms.Position = 0;
+            MemoryStreamReader reader = new MemoryStreamReader(ms.ToArray());
+            RecordParserContext context2 = new RecordParserContext();
+            RecordBlock parseRuleBindingBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.ParseRuleBindingBlock);
+            RecordBlock typeBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.Object);
+            RecordBlock fieldBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.Object);
+            RecordBlock tableBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.Object);
+            RecordBlock parseRulesBlock = context2.Parse<RecordBlock>(reader, context2.ParseRules.Object);
+
+            Assert.Equal(2, parseRulesBlock.RecordCount);
+            foreach (var p in context.ParseRules.Values)
+            {
+                Assert.Equal(p.Id, context2.ParseRules.Get(p.Id).Id);
+                Assert.Equal(p.Name, context2.ParseRules.Get(p.Id).Name);
+                Assert.Equal(p.ParsedType.Id, context2.ParseRules.Get(p.Id).ParsedType.Id);
+                // instructions
             }
         }
     }

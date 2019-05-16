@@ -104,6 +104,25 @@ namespace TraceEventTests
             WriteUTF8String(writer, recordField.Name);
         }
 
+        public static void Write(this BinaryWriter writer, RecordTable recordTable)
+        {
+            Debug.WriteLine("Table: " + recordTable.ToString() + " Offset: " + writer.BaseStream.Position);
+            writer.Write((int)recordTable.Id);
+            writer.Write((int)(recordTable.ItemType != null ? recordTable.ItemType.Id : 0));
+            writer.Write((int)(recordTable.PrimaryKeyField != null ? recordTable.PrimaryKeyField.Id : 0));
+            WriteUTF8String(writer, recordTable.Name);
+        }
+
+        public static void Write(this BinaryWriter writer, ParseRule parseRule)
+        {
+            Debug.WriteLine("ParseRule: " + parseRule.ToString() + " Offset: " + writer.BaseStream.Position);
+            writer.Write((int)parseRule.Id);
+            writer.Write((int)(parseRule.ParsedType != null ? parseRule.ParsedType.Id : 0));
+            WriteUTF8String(writer, parseRule.Name);
+            writer.Write((int)parseRule.Instructions.Length);
+            //instructions
+        }
+
         public static void WriteUTF8String(this BinaryWriter writer, string val)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(val);
@@ -285,6 +304,36 @@ namespace TraceEventTests
             for (int i = 0; i < fields.Length; i++)
             {
                 writer.Write(fields[i]);
+            }
+        }
+
+        public static void WriteDynamicTableBlock(this BinaryWriter writer, RecordTable[] tables, ParseRuleTable parseRules)
+        {
+            writer.Write(parseRules.TableBlock.Id);
+            writer.Write(tables.Length);
+            for (int i = 0; i < tables.Length; i++)
+            {
+                writer.Write(tables[i]);
+            }
+        }
+
+        public static void WriteDynamicParseRuleBlock(this BinaryWriter writer, RecordParserContext context)
+        {
+            List<ParseRule> parseRules = new List<ParseRule>(context.ParseRules.Values.Where(rule => rule.Id > 0));
+            foreach (ParseRule defaultRule in new RecordParserContext().ParseRules.Values)
+            {
+                parseRules.RemoveAll(p => p.Name == defaultRule.Name);
+            }
+            writer.WriteDynamicParseRuleBlock(parseRules.ToArray(), context.ParseRules);
+        }
+
+        public static void WriteDynamicParseRuleBlock(this BinaryWriter writer, ParseRule[] parseRuleItems, ParseRuleTable parseRules)
+        {
+            writer.Write(parseRules.ParseRuleBlock.Id);
+            writer.Write(parseRuleItems.Length);
+            for (int i = 0; i < parseRuleItems.Length; i++)
+            {
+                writer.Write(parseRuleItems[i]);
             }
         }
     }
