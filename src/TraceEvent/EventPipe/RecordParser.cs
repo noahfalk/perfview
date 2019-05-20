@@ -218,10 +218,11 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
     internal class ParseInstructionStoreRead : ParseInstructionStore
     {
         public ParseInstructionStoreRead(RecordType thisType, RecordField destinationField, ParseRule rule,
-            RecordField countField = null) : base(thisType, destinationField)
+            RecordType parsedType = null, RecordField countField = null) : base(thisType, destinationField)
         {
             InstructionType = ParseInstructionType.StoreRead;
             ParseRule = rule;
+            ParsedType = parsedType;
             CountField = countField;
             Debug.Assert(ParseRule != null);
         }
@@ -299,7 +300,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
         static Expression GetCreateAndInitExpression(RecordType recordType)
         {
-            if(!typeof(Record).IsAssignableFrom(recordType.ReflectionType))
+            if(recordType == null || !typeof(Record).IsAssignableFrom(recordType.ReflectionType))
             {
                 return Expression.Default(recordType.ReflectionType);
             }
@@ -354,9 +355,13 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
         public static Func<IStreamReader,object> GetParseDelegate(ParseRule parseRule)
         {
-            Expression localVars = GetNewFrameLocalVars();
+            if(parseRule.ParsedType == null)
+            {
+                //TODO: separate ParseRuleRef from ParseRuleDef
+                return null;
+            }
             Expression initialThis = GetCreateAndInitExpression(parseRule.ParsedType);
-            Expression body = GetParseRuleExpression(parseRule, localVars, initialThis);
+            Expression body = GetParseRuleExpression(parseRule, null, initialThis);
             if(body.Type != typeof(object))
             {
                 body = Expression.Convert(body, typeof(object));
@@ -364,9 +369,16 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return Expression.Lambda<Func<IStreamReader,object>>(body, StreamReaderParameter).Compile();
         }
 
-        static Expression GetNewFrameLocalVars()
+        static Expression PushFrame(Expression parseRule)
         {
-            return Expression.New(typeof(ParseRuleLocalVars));
+            return Expression.Call(typeof(ParseRuleLocalVars).GetMethod("PushFrame", BindingFlags.Static | BindingFlags.Public),
+                parseRule);
+        }
+
+        static Expression PopFrame(Expression parseRule)
+        {
+            return Expression.Call(typeof(ParseRuleLocalVars).GetMethod("PopFrame", BindingFlags.Static | BindingFlags.Public),
+                parseRule);
         }
 
         public static Expression GetPublishExpression(Expression record, RecordTable stream)
@@ -387,32 +399,34 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
         public static Expression GetIterateReadExpression(RecordType thisType, Expression record,  ParseRule rule, RecordField countField)
         {
-            Expression count = GetFieldReadExpression(thisType, LocalVarsParameter, record, countField);
-            if(countField.FieldType.ReflectionType != typeof(int))
+            return RunParseRule(Expression.Constant(rule), childLocals =>
             {
-                count = Expression.ConvertChecked(count, typeof(int));
-            }
-            ParameterExpression countVar = Expression.Variable(typeof(int), "count");
-            Expression initCountVar = Expression.Assign(countVar, count);
-            ParameterExpression indexVar = Expression.Variable(typeof(int), "index");
-            Expression initIndexVar = Expression.Assign(indexVar, Expression.Constant(0));
-            LabelTarget exitLoop = Expression.Label();
-            //TODO: need strong type constructor
-            Expression initRecordVal = Expression.Constant(rule.ParsedType.CreateInstance<Record>());
-            ParameterExpression recordVar = Expression.Variable(rule.ParsedType.ReflectionType);
-            Expression initRecordVar = Expression.Assign(recordVar, initRecordVal);
-            Expression childLocals = GetNewFrameLocalVars();
-            List<Expression> loopBodyStatements = new List<Expression>();
-            Expression loop = Expression.Loop(
-                Expression.IfThenElse(
-                    Expression.LessThan(indexVar, countVar),
-                    Expression.Block(
-                        Expression.Assign(recordVar, GetParseExpression(rule, childLocals, recordVar)),
-                        Expression.Assign(indexVar, Expression.Increment(indexVar))),
-                    Expression.Break(exitLoop)),
-                exitLoop);
-            return Expression.Block(new ParameterExpression[] { countVar, indexVar, recordVar },
-                initCountVar, initIndexVar, initRecordVar, loop);
+                Expression count = GetFieldReadExpression(thisType, LocalVarsParameter, record, countField);
+                if (countField.FieldType.ReflectionType != typeof(int))
+                {
+                    count = Expression.ConvertChecked(count, typeof(int));
+                }
+                ParameterExpression countVar = Expression.Variable(typeof(int), "count");
+                Expression initCountVar = Expression.Assign(countVar, count);
+                ParameterExpression indexVar = Expression.Variable(typeof(int), "index");
+                Expression initIndexVar = Expression.Assign(indexVar, Expression.Constant(0));
+                LabelTarget exitLoop = Expression.Label();
+                //TODO: need strong type constructor
+                Expression initRecordVal = Expression.Constant(rule.ParsedType.CreateInstance<Record>());
+                ParameterExpression recordVar = Expression.Variable(rule.ParsedType.ReflectionType);
+                Expression initRecordVar = Expression.Assign(recordVar, initRecordVal);
+                Expression loop = Expression.Loop(
+                    Expression.IfThenElse(
+                        Expression.LessThan(indexVar, countVar),
+                        Expression.Block(
+                            Expression.Assign(recordVar, GetParseExpression(rule, childLocals, recordVar)),
+                            Expression.Assign(indexVar, Expression.Increment(indexVar))),
+                        Expression.Break(exitLoop)),
+                    exitLoop);
+                return Expression.Block(new ParameterExpression[] { countVar, indexVar, recordVar },
+                    initCountVar, initIndexVar, initRecordVar, loop);
+            });
+            
         }
 
         public static Delegate GetCopyDelegate(RecordType objType)
@@ -456,30 +470,34 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
                     //TODO: the previous field value may not be convertible to the current parsed type
                     //consider array of long, parsed using dynamic parse rules, where some parse rules only handle int
-                    //replacing records with different sub-types during publish could have similar effect - nah that is OK, parsedType would refer to the base type that was
-                    //originally parsed which would match
-                    //
                     Expression previousFieldVal = null;
                     RecordType thisType = instruction.ThisType;
                     RecordType resolvedFieldType = ResolveFieldType(thisType, instruction.DestinationField);
-                    if (resolvedFieldType == parsedType)
+                    if (resolvedFieldType == parsedType && parsedType.ArrayElement == null)
                     {
+                        //TODO: refine the cases where previous value gets loaded and how it gets passed to the parse rule
                         previousFieldVal = GetFieldReadExpression(thisType, LocalVarsParameter, recordParam, instruction.DestinationField);
                     }
                     else
                     {
                         Debug.Assert(!typeof(Record).IsAssignableFrom(parsedType.ReflectionType));
-                        Debug.Assert(!parsedType.ReflectionType.IsArray);
+                        //Debug.Assert(!parsedType.ReflectionType.IsArray);
                     }
                     
                     if (instruction.ParseRuleField != null)
                     {
-                        return GetInstructionStoreExpression(recordParam, instruction, instruction.ParsedType,
+                        return GetInstructionStoreExpression(recordParam, instruction, parsedType,
                             GetReadRuleAndParseExpression(instruction.ThisType, recordParam, instruction.ParsedType, instruction.ParseRuleField, previousFieldVal));
+                    }
+                    else if(parsedType.ArrayElement != null)
+                    {
+                        Expression count = GetFieldReadExpression(instruction.ThisType, LocalVarsParameter, recordParam, instruction.CountField);
+                        return GetInstructionStoreExpression(recordParam, instruction, parsedType,
+                            GetArrayParseExpression(parsedType, instruction.ParseRule, count));
                     }
                     else
                     {
-                        return GetInstructionStoreExpression(recordParam, instruction, instruction.ParseRule.ParsedType,
+                        return GetInstructionStoreExpression(recordParam, instruction, parsedType,
                             GetParseExpression(instruction.ParseRule, null, previousFieldVal));
                     }
                 case ParseInstructionType.StoreReadLookup:
@@ -538,7 +556,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
         public static void DebugFieldRead(object fieldContainer, RecordField field, object val)
         {
-            Debug.WriteLine("Read: " + fieldContainer.ToString() + " . " + field.ToString() + " = " + (val == null ? "(null)" : val.ToString()));
+            ParseRuleLocalVars.DebugWriteLine("Read: " + fieldContainer.ToString() + " . " + field.ToString() + " = " + (val == null ? "(null)" : val.ToString()));
         }
 
         public static Expression GetFieldReadLookupExpression(RecordType thisType, Expression record, RecordField field, RecordTable table)
@@ -578,12 +596,61 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return GetParseExpression(parseRule, parsedType, null, previousFieldVal);
         }
 
+        public static Expression GetArrayParseExpression(RecordType parsedType, ParseRule elementParseRule, Expression count)
+        {
+            return RunParseRule(Expression.Constant(elementParseRule), childLocals =>
+            {
+                if (count.Type != typeof(int))
+                {
+                    count = Expression.ConvertChecked(count, typeof(int));
+                }
+                Expression arrayObj = Expression.NewArrayBounds(parsedType.ReflectionType.GetElementType(), count);
+                ParameterExpression arrayVar = Expression.Variable(arrayObj.Type, "array");
+                Expression initiArrayVar = Expression.Assign(arrayVar, arrayObj);
+                ParameterExpression countVar = Expression.Variable(typeof(int), "count");
+                Expression initCountVar = Expression.Assign(countVar, count);
+                ParameterExpression indexVar = Expression.Variable(typeof(int), "index");
+                Expression initIndexVar = Expression.Assign(indexVar, Expression.Constant(0));
+                LabelTarget exitLoop = Expression.Label();
+                MethodInfo debugMethod = typeof(RecordParserCodeGen).GetMethod("DebugStoreArrayIndex",
+                    BindingFlags.NonPublic | BindingFlags.Static).MakeGenericMethod(parsedType.ReflectionType.GetElementType());
+                Expression loop = Expression.Loop(
+                    Expression.IfThenElse(
+                        Expression.LessThan(indexVar, countVar),
+                        Expression.Block(
+                            Expression.Assign(
+                                Expression.ArrayAccess(arrayVar, indexVar),
+                                GetParseExpression(elementParseRule, childLocals, null)),
+                            Expression.Call(debugMethod, arrayVar, indexVar),
+                            Expression.Assign(indexVar, Expression.Increment(indexVar))),
+                            Expression.Break(exitLoop)),
+                        exitLoop);
+                return Expression.Block(new ParameterExpression[] { arrayVar, countVar, indexVar },
+                    initiArrayVar, initCountVar, initIndexVar, loop, arrayVar);
+            });
+        }
+
+        static void DebugStoreArrayIndex<T>(T[] array, int index)
+        {
+            ParseRuleLocalVars.DebugWriteLine($"ret[{index}] = {array[index].ToString()}");
+        }
+
+
+        static Expression RunParseRule(Expression parseRule, Func<Expression, Expression> bodyFunc)
+        {
+            Expression locals = PushFrame(parseRule);
+            ParameterExpression localsVar = Expression.Variable(typeof(ParseRuleLocalVars), "locals");
+            Expression localsVarInit = Expression.Assign(localsVar, locals);
+            Expression nestedBody = bodyFunc(localsVar);
+            return Expression.Block(new ParameterExpression[] { localsVar },
+                localsVarInit,
+                Expression.TryFinally(
+                    nestedBody,
+                    PopFrame(parseRule)));
+        }
+
         public static Expression GetParseExpression(Expression parseRule, RecordType parsedType, Expression localVars = null, Expression initialThis = null)
         {
-            if (localVars == null)
-            {
-                localVars = GetNewFrameLocalVars();
-            }
             if (parsedType.ReflectionType == typeof(object))
             {
                 initialThis = Expression.Default(typeof(object));
@@ -608,6 +675,8 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         {
             switch (parseRule.Name)
             {
+                case "Null":
+                    return Expression.Default(typeof(object));
                 case "Boolean":
                     MethodInfo readByte = typeof(IStreamReader).GetMethod("ReadByte", BindingFlags.Public | BindingFlags.Instance);
                     return Expression.NotEqual(Expression.Call(StreamReaderParameter, readByte), Expression.Constant((byte)0));
@@ -630,12 +699,22 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                     MethodInfo readUtf8 = typeof(ParseFunctions).GetMethod("ReadUTF8String", BindingFlags.Public | BindingFlags.Static);
                     return Expression.Call(readUtf8, StreamReaderParameter);
                 default:
-                    MethodInfo initFrame = typeof(ParseRuleLocalVars).GetMethod("InitFrame", BindingFlags.Public | BindingFlags.Instance);
-                    localVars = Expression.Call(localVars, initFrame, StreamReaderParameter);
-                    MethodInfo parseWithInstructions = typeof(ParseRule).GetMethod("ParseWithInstructions", BindingFlags.NonPublic | BindingFlags.Instance)
-                                                        .MakeGenericMethod(parseRule.ParsedType.ReflectionType);
-                    return Expression.Call(Expression.Constant(parseRule), parseWithInstructions, localVars, StreamReaderParameter, initialThis);
+                    if(localVars == null)
+                    {
+                        return RunParseRule(Expression.Constant(parseRule),
+                            locals => GetParseWithInstructionsExpression(parseRule, locals, initialThis));
+                    }
+                    return GetParseWithInstructionsExpression(parseRule, localVars, initialThis);
             }
+        }
+
+        private static Expression GetParseWithInstructionsExpression(ParseRule parseRule, Expression localVars, Expression initialThis)
+        {
+            MethodInfo initFrame = typeof(ParseRuleLocalVars).GetMethod("InitFrame", BindingFlags.Public | BindingFlags.Instance);
+            localVars = Expression.Call(localVars, initFrame, StreamReaderParameter);
+            MethodInfo parseWithInstructions = typeof(ParseRule).GetMethod("ParseWithInstructions", BindingFlags.NonPublic | BindingFlags.Instance)
+                                                .MakeGenericMethod(parseRule.ParsedType.ReflectionType);
+            return Expression.Call(Expression.Constant(parseRule), parseWithInstructions, localVars, StreamReaderParameter, initialThis);
         }
 
         public static MemberInfo GetStrongBackingField(RecordField recordField)
@@ -840,20 +919,23 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             ParsedType = parsedType;
             Instructions = instructions;
             //TODO: validate instructions
-            OnParseComplete();
+            Freeze();
         }
-        public void OnParseComplete()
+        protected override void OnFreeze()
         {
-            foreach(ParseInstruction instr in Instructions)
+            if(Instructions != null)
             {
-                instr.ThisType = ParsedType;
+                foreach (ParseInstruction instr in Instructions)
+                {
+                    instr.ThisType = ParsedType;
+                }
             }
             _cachedParseFunc = RecordParserCodeGen.GetParseDelegate(this);
         }
 
         private T ParseWithInstructions<T>(ParseRuleLocalVars locals, IStreamReader reader, T initialThis)
         {
-            Debug.WriteLine("Reading " + Name.ToString() + " at: " + reader.Current);
+            //ParseRuleLocalVars.DebugWriteLine("Reading " + Name.ToString() + " at: " + reader.Current);
             Debug.Assert(ParsedType.ReflectionType == typeof(T));
             foreach (ParseInstruction instruction in Instructions)
             {
@@ -874,8 +956,36 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
     internal class ParseRuleLocalVars : Record
     {
+        [ThreadStatic] static Stack<ParseRuleLocalVars> _stack = new Stack<ParseRuleLocalVars>();
+        public static ParseRuleLocalVars PushFrame(ParseRule rule)
+        {
+            
+            DebugWriteLine(rule.ToString());
+            DebugWriteLine("{");
+            ParseRuleLocalVars frame = new ParseRuleLocalVars(rule);
+            _stack.Push(frame);
+            return frame;
+        }
+        public static void PopFrame(ParseRule rule)
+        {
+            ParseRuleLocalVars locals = _stack.Pop();
+            DebugWriteLine("}");
+            Debug.Assert(rule == locals._rule);
+        }
+
+        public static void DebugWriteLine(string line)
+        {
+            string tab = new string(' ', _stack.Count * 2);
+            Debug.WriteLine(tab + line);
+        }
+
+        static ParseRuleLocalVars CurrentFrame { get { return _stack.Peek(); } }
+
+        ParseRule _rule;
         IStreamReader _reader;
         StreamLabel _positionStart;
+        public ParseRuleLocalVars(ParseRule rule) => _rule = rule;
+
         public ParseRuleLocalVars InitFrame(IStreamReader reader)
         {
             _reader = reader;
@@ -1081,6 +1191,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public RecordType ParseRuleLocalVars { get; private set; }
         public RecordType RecordBlock { get; private set; }
         public RecordType ParseInstruction { get; private set; }
+        public RecordType ParseInstructionArray { get; private set; }
 
         RecordFieldTable _fields;
         Dictionary<string, RecordType> _nameToType = new Dictionary<string, RecordType>();
@@ -1108,6 +1219,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             _fields.Add(new RecordField(0, "Null", ParseRuleLocalVars, null));
             RecordBlock = GetOrCreate(typeof(RecordBlock));
             ParseInstruction = GetOrCreate(typeof(ParseInstruction));
+            ParseInstructionArray = GetOrCreate(typeof(ParseInstruction[]));
             OnParseComplete();
         }
 
@@ -1197,6 +1309,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 
     internal class ParseRuleTable : BindableRecordTable<string, ParseRule>
     {
+        public ParseRule Null { get; private set; }
         public ParseRule Object { get; private set; }
         public ParseRule Boolean { get; private set; }
         public ParseRule FixedUInt8 { get; private set; }
@@ -1231,6 +1344,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public ParseRuleTable(RecordTypeTable types, RecordFieldTable fields, RecordTableTable tables) : 
             base("ParseRule", types.ParseRule, types.ParseRule.GetField("Id"))
         {
+            Add(Null = new ParseRule(0, "Null", types.Object));
             Add(Boolean = new ParseRule(0, "Boolean", types.Boolean));
             Add(FixedUInt8 = new ParseRule(0, "FixedByte", types.Byte));
             Add(FixedInt16 = new ParseRule(0, "FixedInt16", types.Int16));
@@ -1260,20 +1374,20 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 new ParseInstructionStoreReadLookup(types.Table, types.Table.GetField("PrimaryKeyField"), FixedInt32, fields),
                 new ParseInstructionStoreRead(types.Table, types.Table.GetField("Name"), UTF8String),
                 new ParseInstructionPublish(types.Table,tables)));
+            Add(ParseInstruction = new ParseRule(0, "ParseInstruction", types.ParseInstruction,
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseRuleLocalVars.GetField("TempParseRule"), FixedInt32, this),
+                new ParseInstructionStoreRead(types.ParseInstruction, types.ParseRuleLocalVars.GetField("This"), types.ParseInstruction, types.ParseRuleLocalVars.GetField("TempParseRule"))));
             Add(ParseRule = new ParseRule(0, "ParseRule", types.ParseRule,
                 new ParseInstructionStoreRead(types.ParseRule, types.ParseRule.GetField("Id"), FixedInt32),
                 new ParseInstructionStoreReadLookup(types.ParseRule, types.ParseRule.GetField("ParsedType"), FixedInt32, types),
                 new ParseInstructionStoreRead(types.ParseRule, types.ParseRule.GetField("Name"), UTF8String),
-                new ParseInstructionStoreRead(types.ParseRule, types.ParseRuleLocalVars.GetField("TempInt32"), FixedInt32)/*,
-            Add( new ParseInstructionStoreRead(RecordType.Table.GetField("Instructions"), FixedInt32)*/,
+                new ParseInstructionStoreRead(types.ParseRule, types.ParseRuleLocalVars.GetField("TempInt32"), FixedInt32),
+                new ParseInstructionStoreRead(types.ParseRule, types.ParseRule.GetField("Instructions"), ParseInstruction, types.ParseInstructionArray, types.ParseRuleLocalVars.GetField("TempInt32")),
                 new ParseInstructionPublish(types.ParseRule, this)));
             Add(ParseRuleBinding = new ParseRule(0, "ParseRuleBinding", types.ParseRule,
                 new ParseInstructionStoreRead(types.ParseRule, types.ParseRule.GetField("Id"), FixedInt32),
                 new ParseInstructionStoreRead(types.ParseRule, types.ParseRule.GetField("Name"), UTF8String),
                 new ParseInstructionPublish(types.ParseRule, this)));
-            Add(ParseInstruction = new ParseRule(0, "ParseInstruction", types.ParseInstruction,
-                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseRuleLocalVars.GetField("TempParseRule"), FixedInt32, this),
-                new ParseInstructionStoreRead(types.ParseInstruction, types.ParseRuleLocalVars.GetField("This"), types.ParseInstruction, types.ParseRuleLocalVars.GetField("TempParseRule"))));
             Add(ParseInstructionStoreConstant = new ParseRule(0, "ParseInstructionStoreConstant", types.ParseInstruction,
                 new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.StoreConstant),
                 new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("DestinationField"), FixedInt32, fields),
@@ -1285,6 +1399,8 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.StoreRead),
                 new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("DestinationField"), FixedInt32, fields),
                 new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ParseRule"), FixedInt32, this),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ParsedType"), FixedInt32, types),
+                new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("CountField"), FixedInt32, fields),
                 new ParseInstructionStoreReadLookup(types.ParseInstruction, types.ParseInstruction.GetField("ThisType"), FixedInt32, types)));
             Add(ParseInstructionStoreReadDynamic = new ParseRule(0, "ParseInstructionStoreReadDynamic", types.ParseInstruction,
                 new ParseInstructionStoreConstant(types.ParseInstruction, types.ParseInstruction.GetField("InstructionType"), types.Int32, (int)ParseInstructionType.StoreRead),

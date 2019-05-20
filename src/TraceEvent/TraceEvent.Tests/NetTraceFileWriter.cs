@@ -17,18 +17,43 @@ namespace TraceEventTests
     {
         EventPipeEventSource _source;
         BinaryWriter _writer;
+        RecordParserContext _context;
+        RecordType _eventType;
+        RecordType _eventBlockType;
+        RecordTable _eventTable;
+        ParseRule _eventRule;
+        ParseRule _eventBlockRule;
+        List<EventRecord> _events;
         bool _headerWritten;
 
         public NetTraceStreamWriter(EventPipeEventSource input, Stream output)
         {
             _source = input;
             _writer = new BinaryWriter(output);
+            _context = new RecordParserContext();
+            _eventType = _context.Types.GetOrCreate(typeof(EventRecord));
+            _eventBlockType = _context.Types.GetOrCreate(typeof(EventBlock));
+            _eventTable = _context.Tables.Add(new RecordTable<EventRecord>("Event", _eventType));
+            _eventRule = _context.ParseRules.Add(new ParseRule(0, "Event", _eventType,
+                new ParseInstructionStoreRead(_eventType, _eventType.GetField("EventMetadataId"), _context.ParseRules.FixedInt32),
+                new ParseInstructionStoreRead(_eventType, _eventType.GetField("ThreadId"), _context.ParseRules.FixedInt64),
+                new ParseInstructionStoreRead(_eventType, _eventType.GetField("TimeStamp"), _context.ParseRules.FixedInt64),
+                new ParseInstructionStoreRead(_eventType, _eventType.GetField("ActivityID"), _context.ParseRules.Guid),
+                new ParseInstructionStoreRead(_eventType, _eventType.GetField("RelatedActivityID"), _context.ParseRules.Guid),
+                new ParseInstructionPublish(_eventType, _eventTable)));
+            _eventBlockRule = _context.ParseRules.Add(new ParseRule(0, "EventBlock", _eventBlockType,
+                new ParseInstructionStoreRead(_context.Types.RecordBlock, _context.Types.ParseRuleLocalVars.GetField("TempInt32"), _context.ParseRules.FixedInt32),
+                new ParseInstructionStoreRead(_context.Types.RecordBlock, _eventBlockType.GetField("Events"), _eventRule, _eventBlockType.GetField("Events").FieldType, _context.Types.ParseRuleLocalVars.GetField("TempInt32"))));
+            _context.BindAllTables();
+            _events = new List<EventRecord>();
         }
 
         public void Convert()
         {
             _source.AllEvents += _source_AllEvents;
             _source.Process();
+            WriteDynamicEventBlock();
+            _writer.Write(_context.ParseRules.Null.Id);
         }
 
         void _source_AllEvents(TraceEvent obj)
@@ -36,7 +61,23 @@ namespace TraceEventTests
             if(!_headerWritten)
             {
                 WriteHeader();
+                _writer.WriteParseRuleBindingBlock(_context);
+                _writer.WriteDynamicTypeBlock(_context.Types.Values.ToArray(), _context.ParseRules);
+                _writer.WriteDynamicFieldBlock(_context.Fields.Values.ToArray(), _context.ParseRules);
+                _writer.WriteDynamicTableBlock(_context.Tables.Values.ToArray(), _context.ParseRules);
+                _writer.WriteDynamicParseRuleBlock(_context);
                 _headerWritten = true;
+            }
+            EventRecord record = new EventRecord();
+            record.EventMetadataId = (int)obj.eventID;
+            record.ThreadId = obj.ThreadID;
+            record.TimeStamp = obj.TimeStampQPC;
+            record.ActivityID = obj.ActivityID;
+            record.RelatedActivityID = obj.RelatedActivityID;
+            _events.Add(record);
+            if(_events.Count == 1000)
+            {
+                WriteDynamicEventBlock();
             }
         }
 
@@ -54,7 +95,28 @@ namespace TraceEventTests
             _writer.Write(_source._syncTimeQPC);                                  // [32 - 40)
             _writer.Write(_source._QPCFreq);                                      // [40 - 48)
         }
+
+        void WriteDynamicEventBlock()
+        {
+            if(_events.Count == 0)
+            {
+                return;
+            }
+            _writer.Write(_eventBlockRule.Id);
+            _writer.Write(_events.Count);
+            for (int i = 0; i < _events.Count; i++)
+            {
+                _writer.Write(_events[i].EventMetadataId);
+                _writer.Write(_events[i].ThreadId);
+                _writer.Write(_events[i].TimeStamp);
+                _writer.Write(_events[i].ActivityID.ToByteArray());
+                _writer.Write(_events[i].RelatedActivityID.ToByteArray());
+            }
+            _events.Clear();
+        }
     }
+
+
 
     /// <summary>
     /// Writes well known Record types in a format that can be deserialized using the well known ParseRules
@@ -113,14 +175,17 @@ namespace TraceEventTests
             WriteUTF8String(writer, recordTable.Name);
         }
 
-        public static void Write(this BinaryWriter writer, ParseRule parseRule)
+        public static void Write(this BinaryWriter writer, ParseRule parseRule, ParseRuleTable parseRules)
         {
             Debug.WriteLine("ParseRule: " + parseRule.ToString() + " Offset: " + writer.BaseStream.Position);
             writer.Write((int)parseRule.Id);
             writer.Write((int)(parseRule.ParsedType != null ? parseRule.ParsedType.Id : 0));
             WriteUTF8String(writer, parseRule.Name);
             writer.Write((int)parseRule.Instructions.Length);
-            //instructions
+            foreach(ParseInstruction i in parseRule.Instructions)
+            {
+                writer.WriteDynamicInstruction(i, parseRules);
+            }
         }
 
         public static void WriteUTF8String(this BinaryWriter writer, string val)
@@ -144,7 +209,7 @@ namespace TraceEventTests
             writer.Write((byte)val);
         }
 
-        public static void WriteInstruction(this BinaryWriter writer, ParseInstruction instruction, ParseRuleTable parseRules)
+        public static void WriteDynamicInstruction(this BinaryWriter writer, ParseInstruction instruction, ParseRuleTable parseRules)
         {
             Debug.WriteLine("Instruction: " + instruction.ToString() + " Offset: " + writer.BaseStream.Position);
             switch (instruction.InstructionType)
@@ -161,6 +226,16 @@ namespace TraceEventTests
                         writer.Write(parseRules.ParseInstructionStoreRead.Id);
                         writer.Write(instruction.DestinationField.Id);
                         writer.Write(instruction.ParseRule.Id);
+                        if (instruction.ParsedType != null)
+                        {
+                            writer.Write(instruction.ParsedType.Id);
+                            writer.Write(instruction.CountField.Id);
+                        }
+                        else
+                        {
+                            writer.Write((int)0);
+                            writer.Write((int)0);
+                        }
                         writer.Write(instruction.ThisType.Id);
                     }
                     else
@@ -333,8 +408,10 @@ namespace TraceEventTests
             writer.Write(parseRuleItems.Length);
             for (int i = 0; i < parseRuleItems.Length; i++)
             {
-                writer.Write(parseRuleItems[i]);
+                writer.Write(parseRuleItems[i], parseRules);
             }
         }
+
+
     }
 }

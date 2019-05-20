@@ -829,7 +829,7 @@ namespace TraceEventTests
             BinaryWriter writer = new BinaryWriter(ms);
             foreach (ParseInstruction instruction in instructions)
             {
-                writer.WriteInstruction(instruction, context.ParseRules);
+                writer.WriteDynamicInstruction(instruction, context.ParseRules);
             }
             ms.Position = 0;
             MemoryStreamReader reader = new MemoryStreamReader(ms.ToArray());
@@ -1021,10 +1021,56 @@ namespace TraceEventTests
             Assert.Equal(2, parseRulesBlock.RecordCount);
             foreach (var p in context.ParseRules.Values)
             {
-                Assert.Equal(p.Id, context2.ParseRules.Get(p.Id).Id);
-                Assert.Equal(p.Name, context2.ParseRules.Get(p.Id).Name);
-                Assert.Equal(p.ParsedType.Id, context2.ParseRules.Get(p.Id).ParsedType.Id);
-                // instructions
+                ParseRule p2 = context2.ParseRules.Get(p.Id);
+                Assert.Equal(p.Id, p2.Id);
+                Assert.Equal(p.Name, p2.Name);
+                Assert.Equal(p.ParsedType.Id, p2.ParsedType.Id);
+                Assert.Equal(p.Instructions.Length, p2.Instructions.Length);
+                for(int i = 0; i < p.Instructions.Length; i++)
+                {
+                    ParseInstruction i1 = p.Instructions[i];
+                    ParseInstruction i2 = p2.Instructions[i];
+                    Assert.Equal(i1.InstructionType, i2.InstructionType);
+                    Assert.Equal(i1.Constant, i2.Constant);
+                    if(i1.ConstantType != null)
+                    {
+                        Assert.Equal(i1.ConstantType.Id, i2.ConstantType.Id);
+                    }
+                    if(i1.CountField != null)
+                    {
+                        Assert.Equal(i1.CountField.Id, i2.CountField.Id);
+                    }
+                    if(i1.DestinationField != null)
+                    {
+                        Assert.Equal(i1.DestinationField.Id, i2.DestinationField.Id);
+                    }
+                    if(i1.LookupTable != null)
+                    {
+                        Assert.Equal(i1.LookupTable.Id, i2.LookupTable.Id);
+                    }
+                    if (i1.ParsedType != null)
+                    {
+                        Assert.Equal(i1.ParsedType.Id, i2.ParsedType.Id);
+                    }
+                    if (i1.ParseRule != null)
+                    {
+                        Assert.Equal(i1.ParseRule.Id, i2.ParseRule.Id);
+                    }
+                    if (i1.ParseRuleField != null)
+                    {
+                        Assert.Equal(i1.ParseRuleField.Id, i2.ParseRuleField.Id);
+                    }
+                    if (i1.PublishStream != null)
+                    {
+                        Assert.Equal(i1.PublishStream.Id, i2.PublishStream.Id);
+                    }
+                    if (i1.SourceField != null)
+                    {
+                        Assert.Equal(i1.SourceField.Id, i2.SourceField.Id);
+                    }
+                    Assert.Equal(i1.ThisType.Id, i2.ThisType.Id);
+                    
+                }
             }
         }
     }

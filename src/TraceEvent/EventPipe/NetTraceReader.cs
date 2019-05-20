@@ -15,17 +15,28 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         static readonly int s_formatV1HeaderSize = 48;
 
         IStreamReader _reader;
+        RecordParserContext _context;
         
         public NetTraceReader(Stream inputStream)
         {
             _reader = new PinnedStreamReader(inputStream);
+            _context = new RecordParserContext();
+            RecordType eventType = _context.Types.GetOrCreate(typeof(EventRecord));
+            _context.Types.GetOrCreate(typeof(EventBlock));
+            _context.Tables.Add(new EventStream(this, eventType));
         }
         public NetTraceHeader Header { get; private set; }
+        public Action<EventRecord> EventParsed;
 
         public void Process()
         {
             CheckMagic();
             Header = ReadHeader();
+            object parsedObject = _context.Parse<object>(_reader, _context.ParseRules.ParseRuleBindingBlock);
+            while(parsedObject != null)
+            {
+                parsedObject = _context.Parse<object>(_reader, _context.ParseRules.Object);
+            }
         }
 
         public void CheckMagic()
@@ -80,5 +91,37 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         public long SyncTimeUTC;
         public long SyncTimeQPC;
         public long QPCFrequency;
+    }
+
+
+    internal class EventBlock : Record
+    {
+        [RecordField] public EventRecord[] Events;
+    }
+
+    internal class EventRecord : Record
+    {
+        [RecordField] public int EventMetadataId;
+        [RecordField] public long ThreadId;
+        [RecordField] public long TimeStamp;
+        [RecordField] public Guid ActivityID;
+        [RecordField] public Guid RelatedActivityID;
+        [RecordField] public byte[] Payload;
+    }
+
+    internal class EventStream : RecordTable<EventRecord>
+    {
+        NetTraceReader _netTraceReader;
+
+        public EventStream(NetTraceReader reader, RecordType eventType) : base("Event", eventType)
+        {
+            _netTraceReader = reader;
+        }
+
+        protected override EventRecord OnPublish(EventRecord item)
+        {
+            _netTraceReader.EventParsed?.Invoke(item);
+            return item;
+        }
     }
 }

@@ -26,6 +26,7 @@ namespace TraceEventTests
 
             string eventPipeFilePath = Path.Combine(UnZippedDataDir, eventPipeFileName);
 
+            List<EventRecord> events = new List<EventRecord>();
             using (var traceSource = new EventPipeEventSource(eventPipeFilePath))
             {
                 string nettraceFilePath = Path.Combine(OutputDir, Path.ChangeExtension(eventPipeFileName, ".nettrace"));
@@ -38,9 +39,10 @@ namespace TraceEventTests
                 using (FileStream netTraceStream = File.OpenRead(nettraceFilePath))
                 {
                     NetTraceReader netTrace = new NetTraceReader(netTraceStream);
-                    netTrace.CheckMagic();
-                    NetTraceHeader header = netTrace.ReadHeader();
+                    netTrace.EventParsed += e =>  events.Add(e);
+                    netTrace.Process();
 
+                    NetTraceHeader header = netTrace.Header;
                     Assert.Equal(1, header.MinCompatibleFormatVersion);
                     Assert.Equal(1, header.FormatVersion);
                     Assert.Equal(48, header.HeaderSize);
@@ -51,6 +53,22 @@ namespace TraceEventTests
                     Assert.Equal(traceSource._syncTimeQPC, header.SyncTimeQPC);
                     Assert.Equal(traceSource._QPCFreq, header.QPCFrequency);
                 }
+            }
+
+            using (var traceSource = new EventPipeEventSource(eventPipeFilePath))
+            {
+                int i = 0;
+                traceSource.AllEvents += e =>
+                {
+                    Assert.Equal((int)e.eventID, events[i].EventMetadataId);
+                    Assert.Equal(e.ThreadID, events[i].ThreadId);
+                    Assert.Equal(e.TimeStampQPC, events[i].TimeStamp);
+                    Assert.Equal(e.ActivityID, events[i].ActivityID);
+                    Assert.Equal(e.RelatedActivityID, events[i].RelatedActivityID);
+                    i++;
+                };
+                traceSource.Process();
+                Assert.Equal(i, events.Count);
             }
         }
     }
