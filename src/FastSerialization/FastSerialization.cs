@@ -983,6 +983,36 @@ namespace FastSerialization
 #endif
     sealed class Deserializer : IDisposable
     {
+        public static bool HasFastSerializationHeader(IStreamReader reader)
+        {
+            StreamLabel current = reader.Current;
+            try
+            {
+                // this needs to be read as a single array of bytes so that we can seek back, even
+                // when streaming
+                var expectedSig = "!FastSerialization.1";
+                byte[] sigBytes = new byte[expectedSig.Length + 4];
+                reader.Read(sigBytes, 0, sigBytes.Length);
+                if (BitConverter.ToInt32(sigBytes,0) != expectedSig.Length)
+                {
+                    return false;
+                }
+
+                for (int i = 0; i < expectedSig.Length; i++)
+                {
+                    if (sigBytes[i+4] != expectedSig[i])
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            finally
+            {
+                reader.Goto(current);
+            }
+        }
+
         /// <summary>
         /// Create a Deserializer that reads its data from a given file
         /// </summary>
