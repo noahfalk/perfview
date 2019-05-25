@@ -12,19 +12,20 @@ using System.Threading.Tasks;
 
 namespace Microsoft.Diagnostics.Tracing.EventPipe
 {
+    unsafe delegate void EventParsedFunction(TraceEventNativeMethods.EVENT_RECORD* eventRecord);
+
     internal class NetPerfReader : EventPipeSourceInfo, IFastSerializable, IFastSerializableVersion
     {
-        public NetPerfReader(Deserializer deserializer, EventPipeEventSource source)
+        public NetPerfReader(Deserializer deserializer)
         {
             _deserializer = deserializer;
-            _source = source;
 
 #if SUPPORT_V1_V2
             // This is only here for V2 and V1.  V3+ should use the name EventTrace, it can be removed when we drop support.
             _deserializer.RegisterFactory("Microsoft.DotNet.Runtime.EventPipeFile", delegate { return this; });
 #endif
             _deserializer.RegisterFactory("Trace", delegate { return this; });
-            _deserializer.RegisterFactory("EventBlock", delegate { return new EventPipeEventBlock(this, _source); });
+            _deserializer.RegisterFactory("EventBlock", delegate { return new EventPipeEventBlock(this); });
 
             var entryObj = _deserializer.GetEntryObject(); // this call invokes FromStream and reads header data
 
@@ -59,19 +60,13 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             else
             {
                 PinnedStreamReader deserializerReader = (PinnedStreamReader)_deserializer.Reader;
+
                 while (deserializerReader.Current < _endOfEventStream)
                 {
                     TraceEventNativeMethods.EVENT_RECORD* eventRecord = ReadEvent(deserializerReader);
                     if (eventRecord != null)
                     {
-                        // in the code below we set sessionEndTimeQPC to be the timestamp of the last event.  
-                        // Thus the new timestamp should be later, and not more than 1 day later.  
-                        Debug.Assert(_source.sessionEndTimeQPC <= eventRecord->EventHeader.TimeStamp);
-                        Debug.Assert(_source.sessionEndTimeQPC == 0 || eventRecord->EventHeader.TimeStamp - _source.sessionEndTimeQPC < QPCFreq * 24 * 3600);
-
-                        var traceEvent = _source.Lookup(eventRecord);
-                        _source.Dispatch(traceEvent);
-                        _source.sessionEndTimeQPC = eventRecord->EventHeader.TimeStamp;
+                        OnEventParsed?.Invoke(eventRecord);
                     }
                 }
             }
@@ -79,14 +74,15 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             return true;
         }
 
+        public EventParsedFunction OnEventParsed { get; set; }
+        public Action<EventPipeMetadataHeader, PinnedStreamReader> OnMetadataParsed { get; set; }
+
         internal unsafe TraceEventNativeMethods.EVENT_RECORD* ReadEvent(PinnedStreamReader reader)
         {
             EventPipeEventHeader* eventData = (EventPipeEventHeader*)reader.GetPointer(EventPipeEventHeader.HeaderSize);
             eventData = (EventPipeEventHeader*)reader.GetPointer(eventData->TotalEventSize); // now we now the real size and get read entire event
 
             // Basic sanity checks.  Are the timestamps and sizes sane.  
-            Debug.Assert(_source.sessionEndTimeQPC <= eventData->TimeStamp);
-            Debug.Assert(_source.sessionEndTimeQPC == 0 || eventData->TimeStamp - _source.sessionEndTimeQPC < QPCFreq * 24 * 3600);
             Debug.Assert(0 <= eventData->PayloadSize && eventData->PayloadSize <= eventData->TotalEventSize);
             Debug.Assert(0 < eventData->TotalEventSize && eventData->TotalEventSize < 0x20000);  // TODO really should be 64K but BulkSurvivingObjectRanges needs fixing.
             Debug.Assert(_fileFormatVersionNumber < 3 ||
@@ -112,7 +108,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 _eventMetadataDictionary.Add(eventTemplate.MetaDataId, eventTemplate);
 
                 // Record the metadata for this new event
-                _source.OnNewEventPipeEventDefinition(eventTemplate, reader);
+                OnMetadataParsed(eventTemplate, reader);
                 Debug.Assert(reader.Current == metaDataEnd);    // We should have read all the meta-data.  
 
                 int stackBytes = reader.ReadInt32();
@@ -207,10 +203,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
 #endif
 
             // Check for parameter metadata so that it can be consumed by the parser.
-            if (reader.Current < metadataEndLabel)
-            {
-                template.ContainsParameterMetadata = true;
-            }
+            template.ParameterMetadataLength = metadataEndLabel.Sub(reader.Current);
             return template;
         }
 
@@ -405,7 +398,6 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         private int _fileFormatVersionNumber;
         private Dictionary<int, EventPipeMetadataHeader> _eventMetadataDictionary = new Dictionary<int, EventPipeMetadataHeader>();
         private Deserializer _deserializer;
-        private EventPipeEventSource _source;
     }
 
     /// <summary>
@@ -416,10 +408,9 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
     /// </summary>
     internal class EventPipeEventBlock : IFastSerializable
     {
-        public EventPipeEventBlock(NetPerfReader reader, EventPipeEventSource source)
+        public EventPipeEventBlock(NetPerfReader reader)
         {
             _reader = reader;
-            _source = source;
         }
 
         public unsafe void FromStream(Deserializer deserializer)
@@ -446,14 +437,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 TraceEventNativeMethods.EVENT_RECORD* eventRecord = _reader.ReadEvent(deserializerReader);
                 if (eventRecord != null)
                 {
-                    // in the code below we set sessionEndTimeQPC to be the timestamp of the last event.  
-                    // Thus the new timestamp should be later, and not more than 1 day later.  
-                    Debug.Assert(_source.sessionEndTimeQPC <= eventRecord->EventHeader.TimeStamp);
-                    Debug.Assert(_source.sessionEndTimeQPC == 0 || eventRecord->EventHeader.TimeStamp - _source.sessionEndTimeQPC < _source._QPCFreq * 24 * 3600);
-
-                    var traceEvent = _source.Lookup(eventRecord);
-                    _source.Dispatch(traceEvent);
-                    _source.sessionEndTimeQPC = eventRecord->EventHeader.TimeStamp;
+                    _reader.OnEventParsed?.Invoke(eventRecord);
                 }
             }
 
@@ -465,7 +449,6 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
         private StreamLabel _startEventData;
         private StreamLabel _endEventData;
         private NetPerfReader _reader;
-        private EventPipeEventSource _source;
     }
 
     /// <summary>

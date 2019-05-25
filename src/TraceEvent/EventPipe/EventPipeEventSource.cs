@@ -39,8 +39,11 @@ namespace Microsoft.Diagnostics.Tracing
             EventPipeSourceInfo sourceInfo = null;
             if (Deserializer.HasFastSerializationHeader(reader))
             {
-                _netPerfReader = new NetPerfReader(new Deserializer(reader, streamName), this);
+                _netPerfReader = new NetPerfReader(new Deserializer(reader, streamName));
                 sourceInfo = _netPerfReader;
+                _netPerfReader.OnEventParsed = OnEventRecord;
+                _netPerfReader.OnMetadataParsed = OnNewEventPipeEventDefinition;
+
             }
             else
             {
@@ -99,6 +102,18 @@ namespace Microsoft.Diagnostics.Tracing
             }
         }
 
+        internal void OnEventRecord(TraceEventNativeMethods.EVENT_RECORD* eventRecord)
+        {
+            // in the code below we set sessionEndTimeQPC to be the timestamp of the last event.  
+            // Thus the new timestamp should be later, and not more than 1 day later.  
+            Debug.Assert(sessionEndTimeQPC <= eventRecord->EventHeader.TimeStamp);
+            Debug.Assert(sessionEndTimeQPC == 0 || eventRecord->EventHeader.TimeStamp - sessionEndTimeQPC < QPCFreq * 24 * 3600);
+
+            var traceEvent = Lookup(eventRecord);
+            Dispatch(traceEvent);
+            sessionEndTimeQPC = eventRecord->EventHeader.TimeStamp;
+        }
+
         /// <summary>
         /// Give meta-data for an event, passed as a EventPipeEventMetaDataHeader and readerForParameters
         /// which is a StreamReader that points at serialized parameter information, decode the meta-data
@@ -133,7 +148,7 @@ namespace Microsoft.Diagnostics.Tracing
             DynamicTraceEventData template = new DynamicTraceEventData(null, eventMetaDataHeader.EventId, 0, eventMetaDataHeader.EventName, Guid.Empty, opcode, opcodeName, eventMetaDataHeader.ProviderId, eventMetaDataHeader.ProviderName);
 
             // If the metadata contains no parameter metadata, don't attempt to read it.
-            if (!eventMetaDataHeader.ContainsParameterMetadata)
+            if (eventMetaDataHeader.ParameterMetadataLength == 0)
             {
                 template.payloadNames = new string[0];
                 template.payloadFetches = new DynamicTraceEventData.PayloadFetch[0];
@@ -480,7 +495,7 @@ namespace Microsoft.Diagnostics.Tracing
         /// It is what is matched up with EventPipeEventHeader.MetaDataId
         /// </summary>
         public int MetaDataId { get; set; }
-        public bool ContainsParameterMetadata { get; set; }
+        public int ParameterMetadataLength { get; set; }
         public string ProviderName { get; set; }
         public string EventName { get; set; }
         public Guid ProviderId

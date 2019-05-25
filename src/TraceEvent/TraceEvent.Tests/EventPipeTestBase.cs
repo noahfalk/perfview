@@ -53,6 +53,8 @@ namespace TraceEventTests
                     {
                         File.Delete(eventPipeFilePath);
                         ZipFile.ExtractToDirectory(zipFile, UnZippedDataDir);
+                        Assert.True(File.Exists(eventPipeFilePath));
+                        File.SetLastWriteTimeUtc(eventPipeFilePath, File.GetLastWriteTimeUtc(zipFile));
                     }
 
                     Assert.True(File.Exists(eventPipeFilePath));
