@@ -5297,8 +5297,8 @@ namespace Microsoft.Diagnostics.Tracing.Parsers.Clr
                 }
                 else if (Version >= 3)
                 {
-                    Debug.Assert(ret < Environment.ProcessorCount); // This is really GCGlobalHeapHistoryTraceData.NumHeaps, but we don't have access to that here
-                                                                    // It is VERY unlikely that we make more heaps than there are processors.   
+                    //Debug.Assert(ret < Environment.ProcessorCount); // This is really GCGlobalHeapHistoryTraceData.NumHeaps, but we don't have access to that here
+                    //                                                // It is VERY unlikely that we make more heaps than there are processors.   
                 }
 
                 if (ret < 0)

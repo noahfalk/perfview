@@ -83,6 +83,8 @@ namespace Microsoft.Diagnostics.Tracing
             StackCache = new StackCache();
         }
 
+        public event EventHandler<EventPipeDroppedEventInfo> OnEventsDropped;
+
         #region private
         // I put these in the private section because they are overrides, and thus don't ADD to the API.
         public override int EventsLost => _eventsLost;
@@ -405,10 +407,21 @@ namespace Microsoft.Diagnostics.Tracing
             DispatchEventRecord(ConvertEventHeaderToRecord(ref header));
         }
 
-        private void EventCache_OnEventsDropped(int droppedEventCount)
+        private void EventCache_OnEventsDropped(long captureThreadId, long lastEventTimestamp, long currentTimestamp, int droppedEventCount)
         {
             long totalLostEvents = _eventsLost + droppedEventCount;
             _eventsLost = (int)Math.Min(totalLostEvents, int.MaxValue);
+
+            EventPipeDroppedEventInfo droppedEvents = new EventPipeDroppedEventInfo()
+            {
+                CaptureThreadId = captureThreadId,
+                LastTimestampRaw = lastEventTimestamp,
+                LastTimestampRelativeMSec = QPCTimeToRelMSec(lastEventTimestamp),
+                CurrentTimestampRaw = currentTimestamp,
+                CurrentTimestampRelativeMSec = QPCTimeToRelMSec(currentTimestamp),
+                CountEventsDropped = droppedEventCount
+            };
+            OnEventsDropped?.Invoke(this, droppedEvents);
         }
 
         internal bool TryGetTemplateFromMetadata(TraceEvent unhandledEvent, out DynamicTraceEventData template)
@@ -835,6 +848,17 @@ namespace Microsoft.Diagnostics.Tracing
         internal int _processId;
         internal int _expectedCPUSamplingRate;
         #endregion
+    }
+
+
+    public struct EventPipeDroppedEventInfo
+    {
+        public long CaptureThreadId { get; internal set; }
+        public long LastTimestampRaw { get; internal set; }
+        public double LastTimestampRelativeMSec { get; internal set; }
+        public long CurrentTimestampRaw { get; internal set; }
+        public double CurrentTimestampRelativeMSec { get; internal set; }
+        public int CountEventsDropped { get; internal set; }
     }
 
     #region private classes

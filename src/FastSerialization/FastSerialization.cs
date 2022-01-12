@@ -2086,7 +2086,7 @@ namespace FastSerialization
             Log("<ReadTag Type=\"" + tag + "\" Value=\"" + ((int)tag).ToString() + "\" StreamLabel=\"0x" + label.ToString("x") + "\"/>");
 #endif
             // The tag > 0x50 is a work around see comment in FindEndTag
-            Debug.Assert(Tags.Error < tag && tag < Tags.Limit || (int)tag > 0x50);
+            //Debug.Assert(Tags.Error < tag && tag < Tags.Limit || (int)tag > 0x50);
             return tag;
         }
 

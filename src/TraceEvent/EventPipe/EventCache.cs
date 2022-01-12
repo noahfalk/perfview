@@ -9,11 +9,12 @@ using System.Threading.Tasks;
 namespace Microsoft.Diagnostics.Tracing.EventPipe
 {
     unsafe delegate void ParseBufferItemFunction(ref EventPipeEventHeader header);
+    delegate void EventsDroppedFunction(long captureThreadId, long lastDeliveredEventTimestamp, long currentTimestamp, int eventsDropped);
 
     internal class EventCache
     {
         public event ParseBufferItemFunction OnEvent;
-        public event Action<int> OnEventsDropped;
+        public event EventsDroppedFunction OnEventsDropped;
 
         public unsafe void ProcessEventBlock(byte[] eventBlockData)
         {
@@ -39,7 +40,9 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             cursor += headerSize;
             EventMarker eventMarker = new EventMarker(buffer);
             long timestamp = 0;
+            long captureThreadId = 0;
             EventPipeEventHeader.ReadFromFormatV4(cursor, useHeaderCompression, ref eventMarker.Header);
+            captureThreadId = eventMarker.Header.CaptureThreadId;
             if (!_threads.TryGetValue(eventMarker.Header.CaptureThreadId, out EventCacheThread thread))
             {
                 thread = new EventCacheThread();
@@ -51,14 +54,11 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
             {
                 EventPipeEventHeader.ReadFromFormatV4(cursor, useHeaderCompression, ref eventMarker.Header);
                 bool isSortedEvent = eventMarker.Header.IsSorted;
-                timestamp = eventMarker.Header.TimeStamp;
                 int sequenceNumber = eventMarker.Header.SequenceNumber;
                 if (isSortedEvent)
                 {
-                    thread.LastCachedEventTimestamp = timestamp;
-
                     // sorted events are the only time the captureThreadId should change
-                    long captureThreadId = eventMarker.Header.CaptureThreadId;
+                    captureThreadId = eventMarker.Header.CaptureThreadId;
                     if (!_threads.TryGetValue(captureThreadId, out thread))
                     {
                         thread = new EventCacheThread();
@@ -66,11 +66,12 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                         AddThread(captureThreadId, thread);
                     }
                 }
+                timestamp = eventMarker.Header.TimeStamp;
 
                 int droppedEvents = (int)Math.Min(int.MaxValue, sequenceNumber - thread.SequenceNumber - 1);
                 if(droppedEvents > 0)
                 {
-                    OnEventsDropped?.Invoke(droppedEvents);
+                    OnEventsDropped?.Invoke(captureThreadId, thread.LastCachedEventTimestamp, timestamp, droppedEvents);
                 }
                 else
                 {
@@ -78,9 +79,11 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                     // makes droppedEvents go negative
                     Debug.Assert(droppedEvents == 0 || sequenceNumber == 1);
                 }
-                thread.SequenceNumber = sequenceNumber;
 
-                if(isSortedEvent)
+                thread.SequenceNumber = sequenceNumber;
+                thread.LastCachedEventTimestamp = timestamp;
+
+                if (isSortedEvent)
                 {
                     SortAndDispatch(timestamp);
                     OnEvent?.Invoke(ref eventMarker.Header);
@@ -132,7 +135,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                 {
                     if(sequenceNumber > 0)
                     {
-                        OnEventsDropped?.Invoke(sequenceNumber);
+                        OnEventsDropped?.Invoke(captureThreadId, 0, timestamp, sequenceNumber);
                     }
                     thread = new EventCacheThread();
                     thread.SequenceNumber = sequenceNumber;
@@ -143,7 +146,7 @@ namespace Microsoft.Diagnostics.Tracing.EventPipe
                     int droppedEvents = unchecked(sequenceNumber - thread.SequenceNumber);
                     if (droppedEvents > 0)
                     {
-                        OnEventsDropped?.Invoke(droppedEvents);
+                        OnEventsDropped?.Invoke(captureThreadId, thread.LastCachedEventTimestamp, timestamp, droppedEvents);
                     }
                     else
                     {

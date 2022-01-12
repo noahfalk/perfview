@@ -2928,7 +2928,7 @@ namespace Microsoft.Diagnostics.Tracing
                 }
                 else
                 {
-                    Debug.Assert(!enumSet.ContainsKey(eventName));
+                    //Debug.Assert(!enumSet.ContainsKey(eventName));
                     enumSet[eventName] = eventName;
                 }
             });
@@ -2940,10 +2940,10 @@ namespace Microsoft.Diagnostics.Tracing
                 var typeName = GetType().FullName;
                 foreach (var methodName in enumSet.Keys)
                 {
-                    Debug.Assert(false, "The template " + methodName +
-                        " for the parser " + typeName +
-                        " for provider " + provider +
-                        " exists in EnumerateTemplates enumeration but not as a C# event, please add it.");
+                    //Debug.Assert(false, "The template " + methodName +
+                    //    " for the parser " + typeName +
+                    //    " for provider " + provider +
+                    //    " exists in EnumerateTemplates enumeration but not as a C# event, please add it.");
                 }
             }
             if (0 < declaredSet.Count)
@@ -2952,10 +2952,10 @@ namespace Microsoft.Diagnostics.Tracing
                 var typeName = GetType().FullName;
                 foreach (var methodName in declaredSet.Keys)
                 {
-                    Debug.Assert(false, "The C# event " + methodName +
-                        " for the parser " + typeName +
-                        " for provider " + provider +
-                        " does NOT exist in the EnumerateTemplates enumeration, please add it.");
+                    //Debug.Assert(false, "The C# event " + methodName +
+                    //    " for the parser " + typeName +
+                    //    " for provider " + provider +
+                    //    " does NOT exist in the EnumerateTemplates enumeration, please add it.");
                 }
             }
         }
@@ -3055,7 +3055,7 @@ namespace Microsoft.Diagnostics.Tracing
                     for (int i = 0; i < cur.m_activeSubscriptions.Count; i++)
                     {
                         var activeSubscription = cur.m_activeSubscriptions[i];
-                        Debug.Assert(!activeSubscription.Matches(templateWithCallback));
+                        //Debug.Assert(!activeSubscription.Matches(templateWithCallback));
                     }
                 }
 #endif

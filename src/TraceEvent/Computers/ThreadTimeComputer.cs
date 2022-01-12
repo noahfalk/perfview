@@ -512,7 +512,7 @@ namespace Microsoft.Diagnostics.Tracing
             if (oldStartStop != null)
             {
                 double unknownStartTimeMSec = m_unknownTimeStartMsec.Get((int)oldStartStop.Index);
-                Debug.Assert(unknownStartTimeMSec < 0);
+                //Debug.Assert(unknownStartTimeMSec < 0);
                 if (unknownStartTimeMSec < 0)
                 {
                     unknownStartTimeMSec++;     //We represent the ref count as a negative number, here we are decrementing the ref count
@@ -699,7 +699,7 @@ namespace Microsoft.Diagnostics.Tracing
                 // I have seen this fire because there are two thread-stops for the same thread in the trace.   
                 // I have only seen this once so I am leaving this assert (it seems it does more good than harm)
                 // But if it happens habitually, we should pull it.  
-                Debug.Assert(m_threadState[(int)thread.ThreadIndex].ThreadRunning || m_threadState[(int)thread.ThreadIndex].ThreadUninitialized);
+                //Debug.Assert(m_threadState[(int)thread.ThreadIndex].ThreadRunning || m_threadState[(int)thread.ThreadIndex].ThreadUninitialized);
                 m_threadState[(int)thread.ThreadIndex].BlockTimeStartRelativeMSec = double.NegativeInfinity;       // Indicate we are dead
             }
         }

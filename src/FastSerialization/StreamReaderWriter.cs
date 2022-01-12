@@ -327,7 +327,7 @@ namespace FastSerialization
         /// </summary>
         public void Write(StreamLabel value)
         {
-            Debug.Assert((long)value <= int.MaxValue);
+            //Debug.Assert((long)value <= int.MaxValue);
             Write((int)value);
         }
         /// <summary>

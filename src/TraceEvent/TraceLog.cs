@@ -108,13 +108,13 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         public static TraceLog OpenOrConvert(string etlOrEtlxFilePath, TraceLogOptions options = null)
         {
             // Accept either Etl or Etlx file name 
-            if (etlOrEtlxFilePath.EndsWith(".etl", StringComparison.OrdinalIgnoreCase))
+            if (etlOrEtlxFilePath.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase))
             {
                 etlOrEtlxFilePath = Path.ChangeExtension(etlOrEtlxFilePath, ".etlx");
             }
 
             // See if the etl file exists. 
-            string etlFilePath = Path.ChangeExtension(etlOrEtlxFilePath, ".etl");
+            string etlFilePath = Path.ChangeExtension(etlOrEtlxFilePath, ".nettrace");
             bool created = false;
             if (File.Exists(etlFilePath))
             {

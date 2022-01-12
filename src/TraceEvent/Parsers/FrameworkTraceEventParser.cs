@@ -9369,7 +9369,7 @@ namespace Microsoft.Diagnostics.Tracing.Parsers.FrameworkEventSource
         }
         protected internal override void Validate()
         {
-            Debug.Assert(!(Version == 0 && EventDataLength != SkipUnicodeString(12) + 4));
+            //Debug.Assert(!(Version == 0 && EventDataLength != SkipUnicodeString(12) + 4));
             Debug.Assert(!(Version > 0 && EventDataLength < SkipUnicodeString(12) + 4));
         }
         protected internal override Delegate Target
