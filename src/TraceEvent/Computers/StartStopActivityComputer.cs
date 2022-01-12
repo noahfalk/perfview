@@ -160,6 +160,24 @@ namespace Microsoft.Diagnostics.Tracing
                 // (except in special cases where the conventions were not followed and we fix them up). 
                 if (data.Opcode != TraceEventOpcode.Start && data.Opcode != TraceEventOpcode.Stop)
                 {
+                    if (data.ActivityID != StartStopKey.Empty)
+                    {
+                        if(!m_activityIDInfo.TryGetValue(data.ActivityID, out ActivityIDInfo aInfo))
+                        {
+                            StartStopActivity preExistingActivity = GetActiveStartStopActivityTable(data.ActivityID, data.ProcessID);
+                            Debug.Assert(preExistingActivity == null);
+                            aInfo = new ActivityIDInfo();
+                            aInfo.ObservedBeforeStartEvent = true;
+                            aInfo.FirstEvent = data.Clone();
+                            m_activityIDInfo.Add(data.ActivityID, aInfo);
+                        }
+                        if(data.ThreadID != aInfo.FirstEvent.ThreadID)
+                        {
+                            aInfo.ObservedOnDifferentThread = true;
+                        }
+                        aInfo.Count++;
+                    }
+
                     // In V4.6 the activity ID for Microsoft-Windows-ASPNET/Request/Start is improperly set, but we can fix it by 
                     // looking at the 'send' event that happens just before it.   Can be removed when V4.6 no longer deployed.  
                     // TODO remove (including threadToLastAspNetGuid) after 9/2016
@@ -680,7 +698,7 @@ namespace Microsoft.Diagnostics.Tracing
 
         /// <summary>
         /// returns a string representation for the activity path.  If the GUID is not an activity path then it returns
-        /// the normal string representation for a GUID.
+        /// the normal string representation for a GUID.  
         /// </summary>
         /// <remarks>
         /// 0001111d-0000-0000-0000-00007bc7be59 will pass IsActivityPath check only when process Id 2125233 is provided.
@@ -863,6 +881,16 @@ namespace Microsoft.Diagnostics.Tracing
                 Guid activityIdValue = data.ActivityID;
                 activity = new StartStopActivity(data, taskName, ref activityIdValue, creator, m_nextIndex++, extraStartInfo);
             }
+            if(!m_activityIDInfo.TryGetValue(data.ActivityID, out ActivityIDInfo aInfo))
+            {
+                aInfo = new ActivityIDInfo();
+                aInfo.FirstEvent = data.Clone();
+                aInfo.Count++;
+                m_activityIDInfo.Add(data.ActivityID, aInfo);
+            }
+            Debug.Assert(aInfo.SSActivity == null);
+            aInfo.SSActivity = activity;
+
             SetActiveStartStopActivityTable(activity.ActivityID, data.ProcessID, activity);       // Put it in our table of live activities.  
             m_traceActivityToStartStopActivity.Set((int)taskIndex, activity);
 
@@ -1366,10 +1394,21 @@ namespace Microsoft.Diagnostics.Tracing
         private ActivityComputer m_taskComputer;                                             // I need to be able to get the current Activity to keep track of start-stop activities. 
         private GrowableArray<StartStopActivity> m_traceActivityToStartStopActivity;         // Maps a TraceActivity (index) to a start stop activity at the current time. 
         private Dictionary<StartStopKey, StartStopActivity> m_activeStartStopActivities;     // Lookup activities by activityID&ProcessID (we call the start-stop key) at the current time
+        public Dictionary<StartStopKey, ActivityIDInfo> m_activityIDInfo = new Dictionary<StartStopKey, ActivityIDInfo>();
         private int m_nextIndex;                                                             // Used to create unique indexes for StartStopActivity.Index.  
         private StartStopActivity m_deferredStop;                                            // We defer doing the stop action until the next event.  This is what remembers to do this.  
         private bool m_ignoreApplicationInsightsRequestsWithRelatedActivityId;               // Until .NET Core 3.0, Application Insights events uses this activity id to de-dupe the rest of the nested activities.
         #endregion
+    }
+
+    public class ActivityIDInfo
+    {
+        public TraceEvent FirstEvent;
+        public bool ObservedOnDifferentThread;
+        public int Count;
+        public bool ObservedBeforeStartEvent;
+        public StartStopActivity SSActivity;
+        public StartStopKey Key => FirstEvent.ActivityID;
     }
 
     /// <summary>

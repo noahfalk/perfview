@@ -134,7 +134,8 @@ namespace PerfView
                 {
                     foreach (string column in ColumnsToDisplay)
                     {
-                        if (column == "*" || column == "ActivityInfo" || column == "StartStopActivity")
+                        if (column == "*" || column == "ActivityInfo" || column == "StartStopActivity" 
+                            || column == "TraceID" || column == "SpanID" || column == "ParentSpanID")
                         {
                             m_needsComputers = true;
                             break;
@@ -150,6 +151,7 @@ namespace PerfView
                 {
                     m_activityComputer = new ActivityComputer(source, App.GetSymbolReader());
                     m_startStopActivityComputer = new StartStopActivityComputer(source, m_activityComputer);
+                    m_distributedTraceIdComputer = new DistributedTraceIdComputer(source, m_startStopActivityComputer);
                 }
                 source.AllEvents += delegate (TraceEvent data)
                 {
@@ -480,6 +482,8 @@ namespace PerfView
             }
             columnsForSelectedEvents["ActivityInfo"] = "ActivityInfo";
             columnsForSelectedEvents["StartStopActivity"] = "StartStopActivity";
+            columnsForSelectedEvents["TraceID"] = "TraceID";
+            columnsForSelectedEvents["SpanID"] = "SpanID";
             columnsForSelectedEvents["ThreadID"] = "ThreadID";
             columnsForSelectedEvents["ProcessorNumber"] = "ProcessorNumber";
             columnsForSelectedEvents["ActivityID"] = "ActivityID";
@@ -514,6 +518,7 @@ namespace PerfView
         private bool m_needsComputers;          // True if you are looking at fields that need m_activityComputer or m_startStopActivityComputer
         private ActivityComputer m_activityComputer;
         private StartStopActivityComputer m_startStopActivityComputer;
+        private DistributedTraceIdComputer m_distributedTraceIdComputer;
         private Dictionary<string, TraceEventCounts> m_nameToCounts;
         private List<string> m_eventNames;
         private Dictionary<string, bool> m_selectedEvents;      // set to true if the event is only present because it is a start for a stop.  
@@ -620,7 +625,25 @@ namespace PerfView
                             }
 
                             AddField("StartStopActivity", name + "/P=" + parentName, columnOrder, restString);
+                            string traceId = source.m_distributedTraceIdComputer.GetCurrentTraceId(startStopActivity);
+                            if(traceId != null)
+                            {
+                                AddField("TraceID", traceId, columnOrder, restString);
+                            }
+                            string spanId = source.m_distributedTraceIdComputer.GetCurrentSpanId(startStopActivity);
+                            if(spanId != null)
+                            {
+                                AddField("SpanID", spanId, columnOrder, restString);
+                            }
+                            string parentSpanId = source.m_distributedTraceIdComputer.GetCurrentParentSpanId(startStopActivity);
+                            if (parentSpanId != null)
+                            {
+                                AddField("ParentSpanID", parentSpanId, columnOrder, restString);
+                            }
+
                         }
+
+
                     }
                 }
 
