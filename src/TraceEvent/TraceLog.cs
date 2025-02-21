@@ -17,6 +17,7 @@ using Microsoft.Diagnostics.Tracing.Parsers.GCDynamic;
 using Microsoft.Diagnostics.Tracing.Parsers.JScript;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Parsers.Symbol;
+using Microsoft.Diagnostics.Tracing.Parsers.Universal.Events;
 using Microsoft.Diagnostics.Tracing.Session;
 using Microsoft.Diagnostics.Tracing.Utilities;
 using Microsoft.Diagnostics.Utilities;
@@ -27,6 +28,7 @@ using System.Diagnostics.Tracing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -1164,6 +1166,8 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 var dynamicParser = source.Dynamic;
                 var clrParser = source.Clr;
                 var kernelParser = source.Kernel;
+                var universalEventsParser = new UniversalEventsTraceEventParser(source);
+                var universalSystemParser = new UniversalSystemTraceEventParser(source);
 
                 // Get all the users data from the original source.   Note that this happens by reference, which means
                 // that even though we have not built up the state yet (since we have not scanned the data yet), it will
@@ -1215,6 +1219,9 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
             new SampleProfilerTraceEventParser(this);
             new WpfTraceEventParser(this);
+
+            new UniversalEventsTraceEventParser(this);
+            new UniversalSystemTraceEventParser(this);
 
             var dynamicParser = Dynamic;
             registeringStandardParsers = false;
@@ -1344,6 +1351,8 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             jittedMethods = new List<MethodLoadUnloadVerboseTraceData>();
             jsJittedMethods = new List<MethodLoadUnloadJSTraceData>();
             sourceFilesByID = new Dictionary<JavaScriptSourceKey, string>();
+
+            universalProcessSymbols = new List<ProcessSymbolTraceData>();
 
             // We need to copy some information from the event source.
             // An EventPipeEventSource won't have headers set until Process() is called, so we wait for the event trigger instead of copying right away.
@@ -2092,6 +2101,38 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     }
                 };
             }
+
+            UniversalSystemTraceEventParser universalParser = new UniversalSystemTraceEventParser(rawEvents);
+            universalParser.ExistingProcess += delegate(ProcessCreateTraceData data)
+            {
+                TraceProcess process = processes.GetOrCreateProcess(data.Id, data.TimeStampQPC);
+                process.ProcessStart(data);
+            };
+            universalParser.ProcessCreate += delegate (ProcessCreateTraceData data)
+            {
+                TraceProcess process = processes.GetOrCreateProcess(data.Id, data.TimeStampQPC, isProcessStartEvent: true);
+                process.ProcessStart(data);
+            };
+            universalParser.ProcessExit += delegate (ProcessExitTraceData data)
+            {
+                TraceProcess process = processes.GetOrCreateProcess(data.ProcessId, data.TimeStampQPC);
+                process.ProcessStop(data);
+            };
+            universalParser.ProcessMapping += delegate (ProcessMappingTraceData data)
+            {
+                TraceProcess process = processes.GetOrCreateProcess(data.ProcessID, data.TimeStampQPC);
+                //TraceModuleFile moduleFile = process.LoadedModules.UniversalMapping(data);
+
+                if (mappingsToProcesses == null)
+                {
+                    mappingsToProcesses = new Dictionary<int, TraceProcess>();
+                }
+                mappingsToProcesses[data.Id] = process;
+            };
+            universalParser.ProcessSymbol += delegate (ProcessSymbolTraceData data)
+            {
+                universalProcessSymbols.Add((ProcessSymbolTraceData)data.Clone());
+            };
         }
 
         /// <summary>
@@ -2156,7 +2197,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             {
                 Debug.Assert(_syncTimeQPC != 0);         // We should have set this in the Header event (or on session start if it is read time
 #if DEBUG
-                Debug.Assert(lastTimeStamp <= data.TimeStampQPC);     // Ensure they are in order
+                //Debug.Assert(lastTimeStamp <= data.TimeStampQPC);     // Ensure they are in order
                 lastTimeStamp = data.TimeStampQPC;
 #endif
                 // Show status every 128K events
@@ -2404,6 +2445,14 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             foreach (var jsJittedMethod in jsJittedMethods)
             {
                 codeAddresses.AddMethod(jsJittedMethod, sourceFilesByID);
+            }
+
+            foreach (var universalProcessSymbol in universalProcessSymbols)
+            {
+                if (mappingsToProcesses.TryGetValue(universalProcessSymbol.MappingId, out TraceProcess process))
+                {
+                    codeAddresses.AddMethod(universalProcessSymbol, process);
+                }
             }
 
             // Make sure that all threads have a process
@@ -4506,6 +4555,8 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         internal TraceEventDispatcher rawKernelEventSource;         // Only used by real time TraceLog on Win7.   It is the
         internal TraceLogOptions options;
         internal bool registeringStandardParsers;                   // Are we registering
+        internal Dictionary<int, TraceProcess> mappingsToProcesses;
+        internal List<ProcessSymbolTraceData> universalProcessSymbols;
 
         // Used for Real Time
         private struct QueueEntry
@@ -5932,6 +5983,17 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 }
             }
         }
+        internal void ProcessStart(ProcessCreateTraceData data)
+        {
+            startTimeQPC = data.TimeStampQPC;
+            commandLine = data.Name;
+            imageFileName = data.Name;
+            parentID = -1;
+        }
+        internal void ProcessStop(ProcessExitTraceData data)
+        {
+            endTimeQPC = data.TimeStampQPC;
+        }
 
         /// <summary>
         /// Sets the 'Parent' field for the process (based on the ParentID).
@@ -7053,6 +7115,41 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 }
             }
             CheckClassInvarients();
+        }
+
+        internal TraceModuleFile UniversalMapping(ProcessMappingTraceData data)
+        {
+            int index;
+
+            TraceLoadedModule module = FindModuleAndIndexContainingAddress(data.StartAddress, data.TimeStampQPC, out index);
+            if (module == null)
+            {
+                // We need to make a new module
+                TraceModuleFile newModuleFile = process.Log.ModuleFiles.GetOrCreateModuleFile(data.FileName, data.StartAddress); // TODO: What about FileOffset?
+                newModuleFile.imageSize = (int)(data.EndAddress - data.StartAddress);
+                module = new TraceLoadedModule(process, newModuleFile, data.StartAddress);
+                
+                // All mappings are enumerated at the beginning of the trace.
+                module.loadTimeQPC = process.Log.sessionStartTimeQPC;
+                
+                InsertAndSetOverlap(index + 1, module);
+            }
+
+            TraceManagedModule managedModule = FindManagedModuleAndIndex((long)data.StartAddress, data.TimeStampQPC, out index);
+            if (managedModule == null)
+            {
+                // We need to make a new module
+                TraceModuleFile newModuleFile = process.Log.ModuleFiles.GetOrCreateModuleFile(data.FileName, 0);
+                managedModule = new TraceManagedModule(process, newModuleFile, (long)data.StartAddress);
+                modules.Insert(index + 1, module);      // put it where it belongs in the sorted list
+            }
+
+            process.anyModuleLoaded = true;
+            TraceModuleFile moduleFile = module.ModuleFile;
+            Debug.Assert(moduleFile != null);
+
+            CheckClassInvarients();
+            return moduleFile;
         }
 
         internal TraceManagedModule GetOrCreateManagedModule(long managedModuleID, long timeQPC)
@@ -8406,6 +8503,42 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             });
         }
 
+        internal void AddMethod(ProcessSymbolTraceData data, TraceProcess process)
+        {
+            Debug.Assert(process != null);
+            managedMethodRecordCount++;
+            MethodIndex methodIndex = Microsoft.Diagnostics.Tracing.Etlx.MethodIndex.Invalid;
+
+
+            // TODO: In the middle of trying to make dynamic symbols show up.  Was in the process of creating a ManagedModule to add symbols to.
+            ModuleFileIndex moduleFileIndex = Microsoft.Diagnostics.Tracing.Etlx.ModuleFileIndex.Invalid;
+            TraceManagedModule module = null;
+            ForAllUnresolvedCodeAddressesInRange(process, data.StartAddress, (int)(data.EndAddress - data.StartAddress), true, delegate (ref CodeAddressInfo info)
+            {
+                // If we already resolved, that means that the address was reused, so only add something if it does not already have
+                // information associated with it.
+                if (info.GetMethodIndex(this) == Microsoft.Diagnostics.Tracing.Etlx.MethodIndex.Invalid)
+                {
+                    // Lazily create the method since many methods never have code samples in them.
+                    if (module == null)
+                    {
+                        module = process.LoadedModules.GetOrCreateManagedModule(data.MappingId, data.TimeStampQPC);
+                        moduleFileIndex = module.ModuleFile.ModuleFileIndex;
+                        methodIndex = methods.NewMethod(data.Name, moduleFileIndex, data.Id);
+                        
+                        // TODO: Handle unload and re-load.
+                        //if (data.IsJitted)
+                        //{
+                        //    ilMap = UnloadILMapForMethod(methodIndex, data);
+                        //}
+                    }
+
+                    // Set the info
+                    info.SetMethodIndex(this, methodIndex);
+                }
+            });
+        }
+
         /// <summary>
         /// Adds a JScript method
         /// </summary>
@@ -9123,6 +9256,14 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
                 TraceProcess process = codeAddresses.log.Processes[GetProcessIndex(codeAddresses)];
                 int index;
+
+
+
+                // TODO: I think the issue is that we have created a bunch of mappings, which makes everything look like native code.
+                // We'll need to instead remove the mappings and just treat everything like jitted code.
+
+
+
                 TraceLoadedModule loadedModule = process.LoadedModules.FindModuleAndIndexContainingAddress(Address, long.MaxValue - 1, out index);
                 if (loadedModule != null)
                 {
