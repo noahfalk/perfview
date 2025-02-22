@@ -2580,7 +2580,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             options.ConversionLog.WriteLine("  {0,8:n0} unique code addresses. ", codeAddresses.Count);
             options.ConversionLog.WriteLine("  {0,8:n0} unique stacks.", callStacks.Count);
             options.ConversionLog.WriteLine("  {0,8:n0} unique managed methods parsed.", codeAddresses.Methods.Count);
-            options.ConversionLog.WriteLine("  {0,8:n0} CLR method event records.", codeAddresses.ManagedMethodRecordCount);
+            options.ConversionLog.WriteLine("  {0,8:n0} dynamic methods.", codeAddresses.DynamicMethods);
             options.ConversionLog.WriteLine("[Conversion complete {0:n0} events.  Conversion took {1:n0} sec.]",
                 eventCount, (DateTime.Now - startTime).TotalSeconds);
         }
@@ -8160,9 +8160,9 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// </summary>
         public TraceModuleFiles ModuleFiles { get { return moduleFiles; } }
         /// <summary>
-        /// Indicates the number of managed method records that were encountered.  This is useful to understand if symbolic information 'mostly works'.
+        /// Indicates the number of dynamic method records that were encountered.  This is useful to understand if symbolic information 'mostly works'.
         /// </summary>
-        public int ManagedMethodRecordCount { get { return managedMethodRecordCount; } }
+        public int DynamicMethods { get { return dynamicMethodCount; } }
         /// <summary>
         /// Initially CodeAddresses for unmanaged code will have no useful name.  Calling LookupSymbolsForModule
         /// lets you resolve the symbols for a particular file so that the TraceCodeAddresses for that DLL
@@ -8472,7 +8472,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// </summary>
         internal void AddMethod(MethodLoadUnloadVerboseTraceData data)
         {
-            managedMethodRecordCount++;
+            dynamicMethodCount++;
             MethodIndex methodIndex = Microsoft.Diagnostics.Tracing.Etlx.MethodIndex.Invalid;
             ILMapIndex ilMap = ILMapIndex.Invalid;
             ModuleFileIndex moduleFileIndex = Microsoft.Diagnostics.Tracing.Etlx.ModuleFileIndex.Invalid;
@@ -8509,11 +8509,8 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         internal void AddMethod(ProcessSymbolTraceData data, TraceProcess process)
         {
             Debug.Assert(process != null);
-            managedMethodRecordCount++;
+            dynamicMethodCount++;
             MethodIndex methodIndex = Microsoft.Diagnostics.Tracing.Etlx.MethodIndex.Invalid;
-
-
-            // TODO: In the middle of trying to make dynamic symbols show up.  Was in the process of creating a ManagedModule to add symbols to.
             ModuleFileIndex moduleFileIndex = Microsoft.Diagnostics.Tracing.Etlx.ModuleFileIndex.Invalid;
             TraceManagedModule module = null;
             ForAllUnresolvedCodeAddressesInRange(process, data.StartAddress, (int)(data.EndAddress - data.StartAddress), true, delegate (ref CodeAddressInfo info)
@@ -8528,15 +8525,10 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                         int index;
                         TraceLoadedModule loadedModule = process.LoadedModules.FindModuleAndIndexContainingAddress(data.StartAddress, data.TimeStampQPC, out index);
                         module = process.LoadedModules.GetOrCreateManagedModule(loadedModule.ModuleID, data.TimeStampQPC);
-                        //module = process.LoadedModules.GetOrCreateManagedModule(data.MappingId, data.TimeStampQPC);
                         moduleFileIndex = module.ModuleFile.ModuleFileIndex;
                         methodIndex = methods.NewMethod(data.Name, moduleFileIndex, data.Id);
                         
-                        // TODO: Handle unload and re-load.
-                        //if (data.IsJitted)
-                        //{
-                        //    ilMap = UnloadILMapForMethod(methodIndex, data);
-                        //}
+                        // When universal traces support re-use of address space, we'll need to support it here.
                     }
 
                     // Set the info
@@ -9579,7 +9571,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
         private TraceCodeAddress[][] codeAddressObjects;  // If we were asked for TraceCodeAddresses (instead of indexes) we cache them, in sparse array
         private string[] names;                         // A cache (one per code address) of the string name of the address
-        private int managedMethodRecordCount;           // Remembers how many code addresses are managed methods (currently not serialized)
+        private int dynamicMethodCount;           // Remembers how many code addresses are managed methods (currently not serialized)
         internal int totalCodeAddresses;                 // Count of the number of times a code address appears in the log.
 
         // These are actually serialized.
