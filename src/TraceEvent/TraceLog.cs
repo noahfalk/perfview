@@ -1166,8 +1166,6 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 var dynamicParser = source.Dynamic;
                 var clrParser = source.Clr;
                 var kernelParser = source.Kernel;
-                var universalEventsParser = new UniversalEventsTraceEventParser(source);
-                var universalSystemParser = new UniversalSystemTraceEventParser(source);
 
                 // Get all the users data from the original source.   Note that this happens by reference, which means
                 // that even though we have not built up the state yet (since we have not scanned the data yet), it will
@@ -2121,7 +2119,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             universalParser.ProcessMapping += delegate (ProcessMappingTraceData data)
             {
                 TraceProcess process = processes.GetOrCreateProcess(data.ProcessID, data.TimeStampQPC);
-                //TraceModuleFile moduleFile = process.LoadedModules.UniversalMapping(data);
+                TraceModuleFile moduleFile = process.LoadedModules.UniversalMapping(data);
 
                 if (mappingsToProcesses == null)
                 {
@@ -7121,34 +7119,39 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         {
             int index;
 
-            TraceLoadedModule module = FindModuleAndIndexContainingAddress(data.StartAddress, data.TimeStampQPC, out index);
-            if (module == null)
-            {
-                // We need to make a new module
-                TraceModuleFile newModuleFile = process.Log.ModuleFiles.GetOrCreateModuleFile(data.FileName, data.StartAddress); // TODO: What about FileOffset?
-                newModuleFile.imageSize = (int)(data.EndAddress - data.StartAddress);
-                module = new TraceLoadedModule(process, newModuleFile, data.StartAddress);
+            // A loaded and managed modules depend on a module file, so get or create one.
+            // TODO: We'll need to store FileOffset as well to handle elf images.
+            TraceModuleFile moduleFile = process.Log.ModuleFiles.GetOrCreateModuleFile(data.FileName, data.StartAddress);
+            moduleFile.imageSize = (long)(data.EndAddress - data.StartAddress);
+
+            // Get or create the loaded module.
+            TraceLoadedModule loadedModule = FindModuleAndIndexContainingAddress(data.StartAddress, data.TimeStampQPC, out index);
+            if (loadedModule == null)
+            {   
+                // The module file is what is used when looking up the module for an arbitrary address, so it must save both the start address and image size.
+                loadedModule = new TraceLoadedModule(process, moduleFile, data.StartAddress);
                 
                 // All mappings are enumerated at the beginning of the trace.
-                module.loadTimeQPC = process.Log.sessionStartTimeQPC;
+                loadedModule.loadTimeQPC = process.Log.sessionStartTimeQPC;
                 
-                InsertAndSetOverlap(index + 1, module);
+                InsertAndSetOverlap(index + 1, loadedModule);
             }
 
+            // Get or create a managed module.  This module is the container for dynamic symbols.
             TraceManagedModule managedModule = FindManagedModuleAndIndex((long)data.StartAddress, data.TimeStampQPC, out index);
             if (managedModule == null)
             {
-                // We need to make a new module
-                TraceModuleFile newModuleFile = process.Log.ModuleFiles.GetOrCreateModuleFile(data.FileName, 0);
-                managedModule = new TraceManagedModule(process, newModuleFile, (long)data.StartAddress);
-                modules.Insert(index + 1, module);      // put it where it belongs in the sorted list
+                managedModule = new TraceManagedModule(process, moduleFile, (long)data.StartAddress);
+                modules.Insert(index + 1, managedModule);
             }
 
             process.anyModuleLoaded = true;
-            TraceModuleFile moduleFile = module.ModuleFile;
-            Debug.Assert(moduleFile != null);
 
+            // Get the latest version to return.
+            moduleFile = loadedModule.ModuleFile;
+            Debug.Assert(moduleFile != null);
             CheckClassInvarients();
+
             return moduleFile;
         }
 
@@ -7224,7 +7227,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 // We only care about the native case.
                 if (canidateModule.key == canidateModule.ImageBase)
                 {
-                    ulong candidateImageEnd = (ulong)canidateModule.ImageBase + (uint)canidateModule.ModuleFile.ImageSize;
+                    ulong candidateImageEnd = (ulong)canidateModule.ImageBase + (ulong)canidateModule.ModuleFile.ImageSize;
                     if ((ulong)address < candidateImageEnd)
                     {
                         // Have we found a match?
@@ -8522,7 +8525,10 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     // Lazily create the method since many methods never have code samples in them.
                     if (module == null)
                     {
-                        module = process.LoadedModules.GetOrCreateManagedModule(data.MappingId, data.TimeStampQPC);
+                        int index;
+                        TraceLoadedModule loadedModule = process.LoadedModules.FindModuleAndIndexContainingAddress(data.StartAddress, data.TimeStampQPC, out index);
+                        module = process.LoadedModules.GetOrCreateManagedModule(loadedModule.ModuleID, data.TimeStampQPC);
+                        //module = process.LoadedModules.GetOrCreateManagedModule(data.MappingId, data.TimeStampQPC);
                         moduleFileIndex = module.ModuleFile.ModuleFileIndex;
                         methodIndex = methods.NewMethod(data.Name, moduleFileIndex, data.Id);
                         
@@ -8596,7 +8602,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// start+length within the process 'process'.   If 'considerResolved' is true' then the address range
         /// is considered resolved and future calls to this routine will not find the addresses (since they are resolved).
         /// </summary>
-        internal void ForAllUnresolvedCodeAddressesInRange(TraceProcess process, Address start, int length, bool considerResolved, ForAllCodeAddrAction body)
+        internal void ForAllUnresolvedCodeAddressesInRange(TraceProcess process, Address start, long length, bool considerResolved, ForAllCodeAddrAction body)
         {
             if (process.codeAddressesInProcess == null)
             {
@@ -10334,7 +10340,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// <summary>
         /// Returns the size of the DLL when loaded in memory
         /// </summary>
-        public int ImageSize { get { return imageSize; } }
+        public long ImageSize { get { return imageSize; } }
         /// <summary>
         /// Returns the address just past the memory the module uses.
         /// </summary>
@@ -10485,7 +10491,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         }
 
         internal string fileName;
-        internal int imageSize;
+        internal long imageSize;
         internal Address imageBase;
         internal string name;
         private ModuleFileIndex moduleFileIndex;

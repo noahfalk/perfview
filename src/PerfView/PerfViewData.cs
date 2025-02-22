@@ -6017,7 +6017,7 @@ table {
                                     {
                                         const int numBuckets = 20;
                                         int bucket = (int)(normalizeDistance * numBuckets);
-                                        int bucketSizeInPages = module.ModuleFile.ImageSize / (numBuckets * 4096);
+                                        int bucketSizeInPages = (int)(module.ModuleFile.ImageSize / (numBuckets * 4096));
                                         string bucketName = "Image Bucket " + bucket + " Size " + bucketSizeInPages + " Pages";
                                         stackIndex = stackSource.Interner.CallStackIntern(stackSource.Interner.FrameIntern(bucketName), stackIndex);
                                     }
