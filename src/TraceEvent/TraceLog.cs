@@ -5944,14 +5944,14 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 }
             }
         }
-        internal void ProcessStart(ProcessCreateTraceData data)
+        internal void UniversalProcessStart(ProcessCreateTraceData data)
         {
             startTimeQPC = data.TimeStampQPC;
             commandLine = data.Name;
             imageFileName = data.Name;
             parentID = -1;
         }
-        internal void ProcessStop(ProcessExitTraceData data)
+        internal void UniversalProcessStop(ProcessExitTraceData data)
         {
             endTimeQPC = data.TimeStampQPC;
         }
@@ -8469,7 +8469,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             });
         }
 
-        internal void AddMethod(ProcessSymbolTraceData data, TraceProcess process)
+        internal void AddUniversalDynamicSymbol(ProcessSymbolTraceData data, TraceProcess process)
         {
             Debug.Assert(process != null);
             dynamicMethodCount++;
@@ -9217,14 +9217,6 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
                 TraceProcess process = codeAddresses.log.Processes[GetProcessIndex(codeAddresses)];
                 int index;
-
-
-
-                // TODO: I think the issue is that we have created a bunch of mappings, which makes everything look like native code.
-                // We'll need to instead remove the mappings and just treat everything like jitted code.
-
-
-
                 TraceLoadedModule loadedModule = process.LoadedModules.FindModuleAndIndexContainingAddress(Address, long.MaxValue - 1, out index);
                 if (loadedModule != null)
                 {

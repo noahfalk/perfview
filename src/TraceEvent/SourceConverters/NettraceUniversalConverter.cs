@@ -26,17 +26,17 @@ namespace Microsoft.Diagnostics.Tracing.SourceConverters
             universalParser.ExistingProcess += delegate (ProcessCreateTraceData data)
             {
                 TraceProcess process = traceLog.Processes.GetOrCreateProcess(data.Id, data.TimeStampQPC);
-                process.ProcessStart(data);
+                process.UniversalProcessStart(data);
             };
             universalParser.ProcessCreate += delegate (ProcessCreateTraceData data)
             {
                 TraceProcess process = traceLog.Processes.GetOrCreateProcess(data.Id, data.TimeStampQPC, isProcessStartEvent: true);
-                process.ProcessStart(data);
+                process.UniversalProcessStart(data);
             };
             universalParser.ProcessExit += delegate (ProcessExitTraceData data)
             {
                 TraceProcess process = traceLog.Processes.GetOrCreateProcess(data.ProcessId, data.TimeStampQPC);
-                process.ProcessStop(data);
+                process.UniversalProcessStop(data);
             };
             universalParser.ProcessMapping += delegate (ProcessMappingTraceData data)
             {
@@ -58,7 +58,7 @@ namespace Microsoft.Diagnostics.Tracing.SourceConverters
             {
                 if (_mappingIdToProcesses.TryGetValue(universalProcessSymbol.MappingId, out TraceProcess process))
                 {
-                    traceLog.CodeAddresses.AddMethod(universalProcessSymbol, process);
+                    traceLog.CodeAddresses.AddUniversalDynamicSymbol(universalProcessSymbol, process);
                 }
             }
         }
