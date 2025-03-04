@@ -19,6 +19,7 @@ using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Parsers.Symbol;
 using Microsoft.Diagnostics.Tracing.Parsers.Universal.Events;
 using Microsoft.Diagnostics.Tracing.Session;
+using Microsoft.Diagnostics.Tracing.SourceConverters;
 using Microsoft.Diagnostics.Tracing.Utilities;
 using Microsoft.Diagnostics.Utilities;
 using System;
@@ -28,7 +29,6 @@ using System.Diagnostics.Tracing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -1218,10 +1218,10 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             new SampleProfilerTraceEventParser(this);
             new WpfTraceEventParser(this);
 
-            new UniversalEventsTraceEventParser(this);
-            new UniversalSystemTraceEventParser(this);
-
             var dynamicParser = Dynamic;
+
+            NettraceUniversalConverter.RegisterParsers(this);
+
             registeringStandardParsers = false;
 
         }
@@ -1350,7 +1350,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             jsJittedMethods = new List<MethodLoadUnloadJSTraceData>();
             sourceFilesByID = new Dictionary<JavaScriptSourceKey, string>();
 
-            universalProcessSymbols = new List<ProcessSymbolTraceData>();
+            universalConverter = new NettraceUniversalConverter();
 
             // We need to copy some information from the event source.
             // An EventPipeEventSource won't have headers set until Process() is called, so we wait for the event trigger instead of copying right away.
@@ -2100,37 +2100,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 };
             }
 
-            UniversalSystemTraceEventParser universalParser = new UniversalSystemTraceEventParser(rawEvents);
-            universalParser.ExistingProcess += delegate(ProcessCreateTraceData data)
-            {
-                TraceProcess process = processes.GetOrCreateProcess(data.Id, data.TimeStampQPC);
-                process.ProcessStart(data);
-            };
-            universalParser.ProcessCreate += delegate (ProcessCreateTraceData data)
-            {
-                TraceProcess process = processes.GetOrCreateProcess(data.Id, data.TimeStampQPC, isProcessStartEvent: true);
-                process.ProcessStart(data);
-            };
-            universalParser.ProcessExit += delegate (ProcessExitTraceData data)
-            {
-                TraceProcess process = processes.GetOrCreateProcess(data.ProcessId, data.TimeStampQPC);
-                process.ProcessStop(data);
-            };
-            universalParser.ProcessMapping += delegate (ProcessMappingTraceData data)
-            {
-                TraceProcess process = processes.GetOrCreateProcess(data.ProcessID, data.TimeStampQPC);
-                TraceModuleFile moduleFile = process.LoadedModules.UniversalMapping(data);
-
-                if (mappingsToProcesses == null)
-                {
-                    mappingsToProcesses = new Dictionary<int, TraceProcess>();
-                }
-                mappingsToProcesses[data.Id] = process;
-            };
-            universalParser.ProcessSymbol += delegate (ProcessSymbolTraceData data)
-            {
-                universalProcessSymbols.Add((ProcessSymbolTraceData)data.Clone());
-            };
+            universalConverter.BeforeProcess(this, rawEvents);
         }
 
         /// <summary>
@@ -2445,13 +2415,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 codeAddresses.AddMethod(jsJittedMethod, sourceFilesByID);
             }
 
-            foreach (var universalProcessSymbol in universalProcessSymbols)
-            {
-                if (mappingsToProcesses.TryGetValue(universalProcessSymbol.MappingId, out TraceProcess process))
-                {
-                    codeAddresses.AddMethod(universalProcessSymbol, process);
-                }
-            }
+            universalConverter.AfterProcess(this);
 
             // Make sure that all threads have a process
             foreach (var curThread in Threads)
@@ -4553,8 +4517,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         internal TraceEventDispatcher rawKernelEventSource;         // Only used by real time TraceLog on Win7.   It is the
         internal TraceLogOptions options;
         internal bool registeringStandardParsers;                   // Are we registering
-        internal Dictionary<int, TraceProcess> mappingsToProcesses;
-        internal List<ProcessSymbolTraceData> universalProcessSymbols;
+        internal NettraceUniversalConverter universalConverter;
 
         // Used for Real Time
         private struct QueueEntry
